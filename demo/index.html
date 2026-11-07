@@ -1,0 +1,554 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pathfinder — level scan + pathfinding auto-clicker</title>
+<style>
+  :root {
+    --bg: #0b0e14;
+    --panel: #121722;
+    --panel-2: #182031;
+    --line: #24304a;
+    --text: #dbe4f5;
+    --muted: #7d8aa6;
+    --accent: #4ade80;
+    --accent-2: #38bdf8;
+    --danger: #f87171;
+    --warn: #fbbf24;
+    --hold: #f472b6;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: radial-gradient(1200px 600px at 20% -10%, #16203380, transparent), var(--bg);
+    color: var(--text);
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex; flex-direction: column; min-height: 100%;
+  }
+  header {
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    padding: 14px 20px; border-bottom: 1px solid var(--line);
+    background: #0d121cbb; backdrop-filter: blur(8px);
+  }
+  h1 { font-size: 16px; margin: 0; letter-spacing: .2px; }
+  h1 span { color: var(--accent); }
+  .sub { color: var(--muted); font-size: 12.5px; }
+  main { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; padding: 16px 20px 24px; flex: 1; }
+  @media (max-width: 980px) { main { grid-template-columns: minmax(0, 1fr); } }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  .card h2 {
+    font-size: 12px; text-transform: uppercase; letter-spacing: .12em; color: var(--muted);
+    margin: 0; padding: 10px 14px; border-bottom: 1px solid var(--line); font-weight: 600;
+  }
+  .card .body { padding: 12px 14px; }
+  canvas { display: block; width: 100%; height: auto; background: #080b12; }
+  .controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; padding: 12px 14px; border-top: 1px solid var(--line); }
+  button, .btn {
+    appearance: none; cursor: pointer; border-radius: 8px; border: 1px solid var(--line);
+    background: var(--panel-2); color: var(--text); padding: 7px 12px; font: inherit; font-size: 13px;
+  }
+  button:hover { border-color: #3a4a6d; background: #1d2740; }
+  button.primary { background: linear-gradient(180deg, #2563eb, #1d4ed8); border-color: #3b82f6; font-weight: 600; }
+  button.primary:hover { background: linear-gradient(180deg, #3b82f6, #2563eb); }
+  button:disabled { opacity: .5; cursor: default; }
+  label.field { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+  input[type=number] {
+    width: 92px; background: #0b101a; color: var(--text); border: 1px solid var(--line);
+    border-radius: 8px; padding: 6px 8px; font: inherit;
+  }
+  input[type=range] { width: 100%; accent-color: #3b82f6; }
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--line); }
+  .stat { background: var(--panel); padding: 10px 12px; }
+  .stat .k { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+  .stat .v { font-variant-numeric: tabular-nums; font-size: 17px; margin-top: 2px; }
+  .badge { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .badge.ok { background: #052e1b; color: var(--accent); border: 1px solid #14532d; }
+  .badge.bad { background: #2a0f12; color: var(--danger); border: 1px solid #7f1d1d; }
+  .badge.warn { background: #2a2107; color: var(--warn); border: 1px solid #78350f; }
+  .badge.idle { background: #131a28; color: var(--muted); border: 1px solid var(--line); }
+  .note { font-size: 12.5px; color: var(--muted); word-break: break-word; min-height: 34px; }
+  .legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 12px; color: var(--muted); padding: 0 14px 12px; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+  .bars { display: grid; gap: 10px; }
+  .bar { background: #0b101a; border: 1px solid var(--line); border-radius: 8px; height: 8px; overflow: hidden; }
+  .bar > i { display: block; height: 100%; width: 0%; background: linear-gradient(90deg, #22c55e, #4ade80); transition: width .12s linear; }
+  .kv { display: flex; justify-content: space-between; font-size: 12.5px; color: var(--muted); }
+  .kv b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+  code { background: #0b101a; border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; font-size: 12px; }
+  .foot { padding: 0 20px 20px; color: var(--muted); font-size: 12.5px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Path<span>finder</span></h1>
+  <div class="sub">scans the level &rarr; searches with a deterministic physics simulator &rarr; clicks only when the click provably survives</div>
+</header>
+
+<main>
+  <div class="card">
+    <h2>Level view</h2>
+    <canvas id="view" width="1100" height="420"></canvas>
+    <div class="controls">
+      <button id="run" class="primary">Run solver</button>
+      <button id="play" disabled>Pause</button>
+      <button id="step" disabled>Step</button>
+      <button id="restart" disabled>Restart</button>
+      <label class="field">seed <input id="seed" type="number" value="7" min="1" max="1000000"></label>
+      <label class="field">difficulty <input id="difficulty" type="number" value="3" min="1" max="5"></label>
+      <label class="field" style="margin-left:auto; gap:10px; min-width:220px">
+        speed <input id="speed" type="range" min="0.25" max="4" step="0.25" value="1" style="flex:1">
+        <span id="speedLabel" style="min-width:34px;text-align:right">1x</span>
+      </label>
+    </div>
+    <div class="legend">
+      <span><i style="background:#3b4a63"></i>solid</span>
+      <span><i style="background:#f87171"></i>hazard</span>
+      <span><i style="background:#38bdf8"></i>player</span>
+      <span><i style="background:#f472b6"></i>button held</span>
+      <span><i style="background:#fbbf24"></i>plan dead-end</span>
+    </div>
+  </div>
+
+  <div style="display:grid; gap:16px; align-content:start">
+    <div class="card">
+      <h2>Run</h2>
+      <div class="body" style="display:grid; gap:10px">
+        <div id="verdict" class="badge idle">idle</div>
+        <div class="stats">
+          <div class="stat"><div class="k">progress</div><div class="v" id="sProgress">–</div></div>
+          <div class="stat"><div class="k">presses</div><div class="v" id="sPresses">–</div></div>
+          <div class="stat"><div class="k">frames</div><div class="v" id="sFrame">–</div></div>
+          <div class="stat"><div class="k">replans</div><div class="v" id="sReplans">–</div></div>
+        </div>
+        <div class="bars">
+          <div class="kv"><span>secured horizon</span><b id="sHorizon">0%</b></div>
+          <div class="bar"><i id="barHorizon"></i></div>
+          <div class="kv"><span>plan coverage</span><b id="sCoverage">–</b></div>
+          <div class="bar"><i id="barCoverage"></i></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>What it's doing</h2>
+      <div class="body" style="display:grid; gap:8px">
+        <div class="kv"><span>planner note</span><b id="sNote" style="max-width:190px;text-align:right;font-weight:500">–</b></div>
+        <div class="kv"><span>level scan</span><b id="sScan">–</b></div>
+        <div class="kv"><span>plan length</span><b id="sPlan">–</b></div>
+        <div class="kv"><span>plan time</span><b id="sMs">–</b></div>
+        <div class="note" id="sExplain">
+          Press <code>Run solver</code> to generate a level, scan it, and let the
+          bot play it frame by frame.
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<div class="foot">
+  The physics and search here are the same C++ the Geode mod runs
+  (<code>src/solver</code>, <code>src/bot</code>) — this page only renders the frame trace
+  produced by <code>tools/sim_server.cpp</code>.
+</div>
+
+<script>
+const canvas = document.getElementById('view');
+const ctx = canvas.getContext('2d');
+const DPR = Math.min(2, window.devicePixelRatio || 1);
+
+const els = {
+  run: document.getElementById('run'),
+  play: document.getElementById('play'),
+  step: document.getElementById('step'),
+  restart: document.getElementById('restart'),
+  seed: document.getElementById('seed'),
+  difficulty: document.getElementById('difficulty'),
+  speed: document.getElementById('speed'),
+  speedLabel: document.getElementById('speedLabel'),
+  verdict: document.getElementById('verdict'),
+  progress: document.getElementById('sProgress'),
+  presses: document.getElementById('sPresses'),
+  frame: document.getElementById('sFrame'),
+  replans: document.getElementById('sReplans'),
+  horizon: document.getElementById('sHorizon'),
+  barHorizon: document.getElementById('barHorizon'),
+  coverage: document.getElementById('sCoverage'),
+  barCoverage: document.getElementById('barCoverage'),
+  note: document.getElementById('sNote'),
+  scan: document.getElementById('sScan'),
+  plan: document.getElementById('sPlan'),
+  ms: document.getElementById('sMs'),
+  explain: document.getElementById('sExplain'),
+};
+
+const BLOCK = 30;          // GD units per block
+const state = {
+  data: null,
+  frame: 0,
+  playing: false,
+  speed: 1,
+  acc: 0,
+  lastT: 0,
+  cameraX: 0,
+};
+
+/* ---------------------------------------------------------------- fetching */
+async function runSolver() {
+  els.run.disabled = true;
+  els.run.textContent = 'Solving…';
+  setBadge('idle', 'solving');
+  try {
+    const seed = Math.max(1, Math.min(1e6, parseInt(els.seed.value) || 1));
+    const difficulty = Math.max(1, Math.min(5, parseInt(els.difficulty.value) || 1));
+    els.seed.value = seed;
+    els.difficulty.value = difficulty;
+    const res = await fetch(`/api/run?seed=${seed}&difficulty=${difficulty}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || `HTTP ${res.status}`);
+    }
+    state.data = await res.json();
+    state.frame = 0;
+    state.cameraX = 0;
+    state.acc = 0;
+    state.playing = true;
+    els.play.disabled = false;
+    els.step.disabled = false;
+    els.restart.disabled = false;
+    els.play.textContent = 'Pause';
+
+    const d = state.data;
+    els.scan.textContent = `${d.solids.length} solids / ${d.hazards.length} hazards`;
+    if (d.finished) setBadge('ok', `survived · finished ${(d.progress * 100).toFixed(0)}%`);
+    else if (d.alive) setBadge('warn', `survived · stopped at ${(d.progress * 100).toFixed(0)}%`);
+    else setBadge('bad', `died at ${(d.progress * 100).toFixed(0)}%`);
+    updateStats();
+  } catch (err) {
+    setBadge('bad', 'error');
+    els.explain.textContent = String(err.message || err);
+  } finally {
+    els.run.disabled = false;
+    els.run.textContent = 'Run solver';
+    resize();
+  }
+}
+
+function setBadge(kind, text) {
+  els.verdict.className = 'badge ' + kind;
+  els.verdict.textContent = text;
+}
+
+/* ------------------------------------------------------------------ layout */
+function resize() {
+  const rect = canvas.getBoundingClientRect();
+  const w = Math.max(320, rect.width || 1100);
+  const h = Math.round(Math.min(460, Math.max(300, w * 0.36)));
+  canvas.width = Math.round(w * DPR);
+  canvas.height = Math.round(h * DPR);
+  canvas.style.height = h + 'px';
+}
+
+function visibleFrames() {
+  if (!state.data) return 1;
+  return state.data.frames.length;
+}
+
+function curFrame() {
+  if (!state.data) return null;
+  const f = state.data.frames[Math.min(state.frame, state.data.frames.length - 1)];
+  if (!f) return null;
+  return { x: f[0], y: f[1], vy: f[2], hold: !!f[3], onGround: !!f[4], deadEnd: !!f[5],
+           planFrames: f[6], cursor: f[7], presses: f[8] };
+}
+
+/* ----------------------------------------------------------------- drawing */
+function draw() {
+  const W = canvas.width / DPR, H = canvas.height / DPR;
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+
+  // background grid
+  ctx.fillStyle = '#080b12';
+  ctx.fillRect(0, 0, W, H);
+
+  const d = state.data;
+  const cf = curFrame();
+  const viewBlocksX = 26;                  // how many blocks wide the view is
+  const scale = W / (viewBlocksX * BLOCK);
+  const groundScreenY = H - 54;
+
+  const camX = cf ? Math.max(0, cf.x - 7 * BLOCK) : 0;
+
+  const toScreenX = (x) => (x - camX) * scale;
+  const toScreenY = (y) => groundScreenY - y * scale;
+
+  // grid lines (one per block)
+  ctx.strokeStyle = '#111a29';
+  ctx.lineWidth = 1;
+  const startBlock = Math.floor(camX / BLOCK);
+  for (let b = startBlock; b < startBlock + viewBlocksX + 2; b++) {
+    const sx = toScreenX(b * BLOCK);
+    ctx.beginPath(); ctx.moveTo(sx, 0); ctx.lineTo(sx, H); ctx.stroke();
+  }
+  for (let b = 0; b < 12; b++) {
+    const sy = toScreenY(b * BLOCK);
+    if (sy < 0) break;
+    ctx.beginPath(); ctx.moveTo(0, sy); ctx.lineTo(W, sy); ctx.stroke();
+  }
+
+  if (!d) {
+    ctx.fillStyle = '#4b5b78';
+    ctx.font = '15px ui-sans-serif, system-ui, sans-serif';
+    ctx.fillText('Run the solver to generate and play a level.', 22, 40);
+    return;
+  }
+
+  // finish line
+  const fx = toScreenX(d.endX);
+  if (fx > -20 && fx < W + 20) {
+    ctx.strokeStyle = '#4ade8055'; ctx.lineWidth = 2;
+    ctx.setLineDash([6, 6]);
+    ctx.beginPath(); ctx.moveTo(fx, 0); ctx.lineTo(fx, groundScreenY); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  // solids
+  for (const [x, y, w, h] of d.solids) {
+    const sx = toScreenX(x), sy = toScreenY(y + h), sw = w * scale, sh = h * scale;
+    if (sx + sw < -40 || sx > W + 40) continue;
+    const grad = ctx.createLinearGradient(0, sy, 0, sy + sh);
+    grad.addColorStop(0, '#46587a');
+    grad.addColorStop(1, '#2b3a48');
+    ctx.fillStyle = grad;
+    ctx.fillRect(sx, sy, sw, sh);
+    ctx.strokeStyle = '#5b7099'; ctx.lineWidth = 1;
+    ctx.strokeRect(sx + .5, sy + .5, sw - 1, sh - 1);
+  }
+
+  // hazards as spikes / saws
+  for (const [x, y, w, h] of d.hazards) {
+    const sx = toScreenX(x), sy = toScreenY(y + h), sw = w * scale, sh = h * scale;
+    if (sx + sw < -40 || sx > W + 40) continue;
+    ctx.fillStyle = '#f87171';
+    if (w >= 28 && h >= 28) {
+      // saw: circle
+      ctx.beginPath();
+      ctx.arc(sx + sw / 2, sy + sh / 2, Math.max(3, sw / 2), 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      ctx.beginPath();
+      ctx.moveTo(sx, sy + sh);
+      ctx.lineTo(sx + sw / 2, sy);
+      ctx.lineTo(sx + sw, sy + sh);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+
+  // ground
+  ctx.fillStyle = '#111a29';
+  ctx.fillRect(0, groundScreenY, W, H - groundScreenY);
+  ctx.strokeStyle = '#26364f'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(0, groundScreenY); ctx.lineTo(W, groundScreenY); ctx.stroke();
+
+  // trail of the actual path
+  const from = Math.max(0, state.frame - 260);
+  ctx.strokeStyle = '#38bdf855'; ctx.lineWidth = 2;
+  ctx.beginPath();
+  for (let i = from; i <= state.frame; i++) {
+    const f = d.frames[i];
+    if (!f) break;
+    const px = toScreenX(f[0] + BLOCK / 2);
+    const py = toScreenY(f[1] + BLOCK / 2);
+    if (i === from) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  }
+  ctx.stroke();
+
+  // press markers (where the bot decided to click)
+  for (let i = from + 1; i <= state.frame; i++) {
+    const prev = d.frames[i - 1], f = d.frames[i];
+    if (!prev || !f) break;
+    if (f[3] && !prev[3]) {
+      const px = toScreenX(f[0] + BLOCK / 2);
+      const py = toScreenY(f[1] + BLOCK / 2);
+      ctx.strokeStyle = '#f472b6';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(px, py, 9, 0, Math.PI * 2); ctx.stroke();
+    }
+  }
+
+  // player
+  if (cf) {
+    const px = toScreenX(cf.x), py = toScreenY(cf.y + BLOCK);
+    const size = BLOCK * scale;
+    ctx.save();
+    if (cf.deadEnd) {
+      ctx.shadowColor = '#fbbf24'; ctx.shadowBlur = 18;
+    } else if (cf.hold) {
+      ctx.shadowColor = '#f472b6'; ctx.shadowBlur = 16;
+    } else {
+      ctx.shadowColor = '#38bdf8'; ctx.shadowBlur = 14;
+    }
+    ctx.fillStyle = cf.deadEnd ? '#fbbf24' : '#38bdf8';
+    ctx.fillRect(px, py, size, size);
+    ctx.restore();
+    ctx.strokeStyle = '#0b0e14'; ctx.lineWidth = 2;
+    ctx.strokeRect(px, py, size, size);
+
+    if (cf.hold) {
+      ctx.fillStyle = '#f472b6';
+      ctx.fillRect(px, py - 8, size, 3);
+    }
+
+    // dead-end marker
+    if (cf.deadEnd) {
+      ctx.fillStyle = '#fbbf24';
+      ctx.font = 'bold 12px ui-sans-serif, system-ui, sans-serif';
+      ctx.fillText('DEAD END', px - 6, py - 12);
+    }
+  }
+
+  // frame ruler
+  const total = visibleFrames();
+  ctx.fillStyle = '#0d121c';
+  ctx.fillRect(0, H - 30, W, 30);
+  const barW = W - 24;
+  const pct = total > 1 ? state.frame / (total - 1) : 0;
+  ctx.fillStyle = '#1b2437';
+  ctx.fillRect(12, H - 20, barW, 6);
+  ctx.fillStyle = '#3b82f6';
+  ctx.fillRect(12, H - 20, barW * pct, 6);
+  ctx.fillStyle = '#93a4c4';
+  ctx.font = '11px ui-monospace, monospace';
+  ctx.fillText(`frame ${state.frame} / ${total - 1}`, 12, H - 26);
+  const pctLabel = `${(pct * 100).toFixed(0)}%`;
+  ctx.fillText(pctLabel, W - 12 - ctx.measureText(pctLabel).width, H - 26);
+}
+
+/* ------------------------------------------------------------------ stats */
+function updateStats() {
+  const d = state.data;
+  if (!d) return;
+  const cf = curFrame();
+  const total = d.frames.length;
+  const last = d.frames[Math.min(state.frame, total - 1)];
+
+  els.progress.textContent = ((last[0] / d.endX) * 100).toFixed(0) + '%';
+  els.presses.textContent = d.presses;
+  els.frame.textContent = state.frame;
+  els.replans.textContent = d.replans;
+
+  const conf = cf && cf.planFrames > 0 ? Math.min(1, cf.planFrames / 120) : 0;
+  els.horizon.textContent = (conf * 100).toFixed(0) + '%';
+  els.barHorizon.style.width = (conf * 100).toFixed(0) + '%';
+  els.barHorizon.style.background = conf > 0.66
+    ? 'linear-gradient(90deg,#22c55e,#4ade80)'
+    : 'linear-gradient(90deg,#b45309,#fbbf24)';
+
+  const coverage = cf && cf.planFrames > 0 ? Math.min(1, cf.cursor / cf.planFrames) : 0;
+  els.coverage.textContent = cf ? `${cf.cursor}/${cf.planFrames}f` : '–';
+  els.barCoverage.style.width = (coverage * 100).toFixed(0) + '%';
+
+  els.note.textContent = d.note || '–';
+  els.plan.textContent = cf ? `${cf.planFrames} frames` : '–';
+  els.ms.textContent = Number(d.maxPlanMs).toFixed(2) + ' ms (worst replan)';
+
+  if (state.frame >= total - 1) {
+    if (d.finished) {
+      els.explain.textContent =
+        `Cleared the level with ${d.presses} presses. Every press was simulated ` +
+        `${120} frames ahead before being issued, and the whole plan was replayed ` +
+        `through the simulator before use.`;
+    } else if (d.alive) {
+      els.explain.textContent =
+        `Survived until the end of the trace at ${(d.progress * 100).toFixed(0)}% ` +
+        `(the demo stops after ${total} frames).`;
+    } else {
+      els.explain.textContent =
+        `No surviving input existed here, so the bot reported DEAD END instead of ` +
+        `guessing. On generated levels this usually means the level itself is not ` +
+        `beatable at that spot.`;
+    }
+  } else if (cf && cf.deadEnd) {
+    els.explain.textContent =
+      `The search found no continuation from here — the cube is flagged DEAD END. ` +
+      `That is the honest failure mode: the bot does not fake a save.`;
+  } else if (cf && cf.hold) {
+    els.explain.textContent =
+      `Holding the button. The press was only issued because a ${120}-frame ` +
+      `simulation proved it survives and does not lead into a dead end.`;
+  } else {
+    els.explain.textContent =
+      `Coasting. Re-planning every ${6} frames from the live state, keeping the ` +
+      `best verified plan and executing its first input.`;
+  }
+}
+
+/* -------------------------------------------------------------------- loop */
+function tick(t) {
+  if (state.data && state.playing) {
+    if (!state.lastT) state.lastT = t;
+    const dt = Math.min(200, t - state.lastT);
+    state.lastT = t;
+    // 60 physics frames per second, scaled by the speed slider
+    state.acc += (dt / 1000) * 60 * state.speed;
+    const total = state.data.frames.length;
+    while (state.acc >= 1) {
+      state.acc -= 1;
+      if (state.frame < total - 1) state.frame++;
+      else { state.playing = false; els.play.textContent = 'Play'; break; }
+    }
+    updateStats();
+  } else {
+    state.lastT = t;
+  }
+  draw();
+  requestAnimationFrame(tick);
+}
+
+/* ----------------------------------------------------------------- events */
+els.run.addEventListener('click', runSolver);
+els.play.addEventListener('click', () => {
+  if (!state.data) return;
+  if (state.frame >= state.data.frames.length - 1) state.frame = 0;
+  state.playing = !state.playing;
+  state.lastT = 0;
+  els.play.textContent = state.playing ? 'Pause' : 'Play';
+});
+els.step.addEventListener('click', () => {
+  if (!state.data) return;
+  state.playing = false;
+  els.play.textContent = 'Play';
+  state.frame = Math.min(state.frame + 1, state.data.frames.length - 1);
+  updateStats();
+});
+els.restart.addEventListener('click', () => {
+  if (!state.data) return;
+  state.frame = 0; state.acc = 0; state.playing = true;
+  state.lastT = 0;
+  els.play.textContent = 'Pause';
+  updateStats();
+});
+els.speed.addEventListener('input', () => {
+  state.speed = parseFloat(els.speed.value);
+  els.speedLabel.textContent = state.speed + 'x';
+});
+canvas.addEventListener('click', (ev) => {
+  if (!state.data) return;
+  const rect = canvas.getBoundingClientRect();
+  const pct = (ev.clientX - rect.left) / rect.width;
+  state.frame = Math.max(0, Math.min(state.data.frames.length - 1,
+    Math.round(pct * (state.data.frames.length - 1))));
+  state.playing = false;
+  els.play.textContent = 'Play';
+  updateStats();
+});
+window.addEventListener('resize', () => { resize(); draw(); });
+
+resize();
+requestAnimationFrame(tick);
+runSolver();
+</script>
+</body>
+</html>

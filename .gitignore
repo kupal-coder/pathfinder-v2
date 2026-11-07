@@ -1,0 +1,20 @@
+# build output
+build/
+*.geode
+*.dll
+*.so
+*.dylib
+*.o
+*.obj
+
+# test / demo binaries (built by `make -C tests` and demo/server.py)
+tests/pathfinder_tests
+tests/bench
+demo/pathfinder_sim
+demo/pathfinder_core.js
+demo/pathfinder_core.wasm
+
+# editor / OS
+.vscode/
+.idea/
+.DS_Store

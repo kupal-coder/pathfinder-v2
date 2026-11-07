@@ -1,0 +1,124 @@
+{
+	"geode": "4.6.1",
+	"gd": {
+		"win": "2.2081",
+		"android": "2.2081",
+		"mac": "2.2081",
+		"ios": "2.2081"
+	},
+	"id": "kupal.pathfinder",
+	"name": "Pathfinder",
+	"version": "v0.1.0",
+	"developer": "kupal",
+	"description": "Scans the level, searches for a surviving path with a deterministic physics simulator, and only clicks when the click is proven to survive.",
+	"repository": "https://github.com/kupal-coder/pathfinder-v2",
+	"issues": {
+		"info": "Report bugs with the HUD note and the level id",
+		"url": "https://github.com/kupal-coder/pathfinder-v2/issues"
+	},
+	"dependencies": {
+		"geode.node-ids": ">=v1.23.3"
+	},
+	"settings": {
+		"enabled": {
+			"name": "Auto-play",
+			"description": "Let Pathfinder drive the cube. Toggle this off to take back control.",
+			"type": "bool",
+			"default": false
+		},
+		"plan-horizon-frames": {
+			"name": "Search horizon (frames)",
+			"description": "How far ahead the simulator looks. 240 frames = 4 seconds. Higher = safer but slower.",
+			"type": "int",
+			"default": 240,
+			"min": 30,
+			"max": 900,
+			"control": {
+				"slider": true
+			}
+		},
+		"min-secured-frames": {
+			"name": "Secured horizon (frames)",
+			"description": "Stop searching once a plan this long provably survives.",
+			"type": "int",
+			"default": 120,
+			"min": 10,
+			"max": 900,
+			"control": {
+				"slider": true
+			}
+		},
+		"click-horizon-frames": {
+			"name": "Click survival check (frames)",
+			"description": "A press is only allowed if the simulator proves at least this much survival afterwards.",
+			"type": "int",
+			"default": 120,
+			"min": 10,
+			"max": 600,
+			"control": {
+				"slider": true
+			}
+		},
+		"replan-every-frames": {
+			"name": "Re-plan interval (frames)",
+			"description": "Re-run the search from the live state this often. Lower = more responsive, more CPU.",
+			"type": "int",
+			"default": 8,
+			"min": 1,
+			"max": 60,
+			"control": {
+				"slider": true
+			}
+		},
+		"max-states-per-frame": {
+			"name": "State budget per frame",
+			"description": "Cap on how many distinct player states the search keeps per frame. Lower this if you get frame drops.",
+			"type": "int",
+			"default": 4000,
+			"min": 128,
+			"max": 40000,
+			"control": {
+				"slider": true
+			}
+		},
+		"verify-plans": {
+			"name": "Verify every plan",
+			"description": "Replay each plan through the simulator before trusting it. Costs nothing and catches model drift.",
+			"type": "bool",
+			"default": true
+		},
+		"gravity": {
+			"name": "Physics: gravity",
+			"description": "Units per frame^2. Only change this if you are calibrating against a new GD version.",
+			"type": "float",
+			"default": 0.958199,
+			"min": 0.1,
+			"max": 4.0,
+			"control": {
+				"slider": true
+			}
+		},
+		"jump-velocity": {
+			"name": "Physics: jump velocity",
+			"description": "Units per frame at jump start. Stock GD cube value is 11.180032.",
+			"type": "float",
+			"default": 11.180032,
+			"min": 1.0,
+			"max": 30.0,
+			"control": {
+				"slider": true
+			}
+		},
+		"hitbox-blocks": {
+			"name": "Physics: hitbox size (blocks)",
+			"description": "Player hitbox in blocks. Stock GD is 1.0; the hazard hitbox is smaller than this.",
+			"type": "float",
+			"default": 1.0,
+			"min": 0.5,
+			"max": 2.0,
+			"control": {
+				"slider": true
+			}
+		}
+	}
+}
