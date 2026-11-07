@@ -120,10 +120,13 @@ Decision AutoPlayer::update(const PlayerState& real) {
     status_.unsupported = false;
 
     // --- stuck detection ---------------------------------------------------
-    if (static_cast<int>(real.x) > lastProgressX_ + 4) {
+    // No forward progress at all is the definition of stuck. (The previous
+    // version only counted while airborne, so being pinned against a wall on the
+    // floor - the actual stuck case - was never caught.)
+    if (static_cast<int>(real.x) > lastProgressX_) {
         lastProgressX_ = static_cast<int>(real.x);
         framesStuck_ = 0;
-    } else if (!real.onGround || real.vy != 0.0) {
+    } else {
         framesStuck_++;
     }
 
@@ -146,23 +149,11 @@ Decision AutoPlayer::update(const PlayerState& real) {
     // --- decide this frame's input ----------------------------------------
     bool desired;
     if (status_.hasPlan) {
+        // The survival gate already ran: buildPlan() only publishes a plan after
+        // replaying it through the simulator for its whole length from this live
+        // state. So any press this frame comes from a proven-surviving sequence.
         desired = plan_.inputAt(cursor_);
         d.verified = true;
-
-        // Gate: if this frame starts a press, the press must be part of a plan
-        // that survived verification (buildPlan already guarantees this). The
-        // explicit check below also covers the "plan says press but the press is
-        // very long" case, where a shorter press might be enough.
-        if (desired && !holding_) {
-            const bool survives =
-                planner_.clickSurvives(real, 3, config_.clickHorizon);
-            if (!survives) {
-                // The verified plan still survives further than any greedy click,
-                // so trust the plan but flag it.
-                status_.note = "press allowed only by the verified plan";
-                d.verified = false;
-            }
-        }
     } else {
         desired = lastResortInput(real, d);
         status_.deadEnd = true;

@@ -2,7 +2,7 @@
 //
 // Geometry Dash is deterministic, so a plan can be validated by simply re-running
 // it. The constants below reproduce GD's cube physics closely enough that a path
-// which survives the simulation survives the game (see README "Calibration").
+// which survives the simulation survives the game (see docs/CALIBRATION.md).
 #pragma once
 
 #include "Types.hpp"
@@ -22,7 +22,21 @@ enum class Mode : uint8_t {
 };
 
 const char* modeName(Mode m);
+
+/// Modes this simulation actually models well enough to command.
+///
+/// Cube: benchmarked end-to-end against generated levels (see tests/bench.cpp).
+/// Ball / UFO / Robot / Wave: modelled from the published GD constants but *not*
+///   benchmarked, so the mod drives them while the survival gate protects you.
+/// Ship: deliberately unsupported. Its vertical control is an acceleration that
+///   needs GD-specific clamping that has not been verified here, and a ship guess
+///   is how a bot flies straight into a wall. Refusing is the honest answer.
+/// Spider / Swing: unsupported (teleport + 2.2 swing physics are not modelled).
 bool isModeSupported(Mode m);
+
+/// True when the mode has been validated against generated levels, as opposed to
+/// "modelled but uncalibrated". Used to warn in the HUD.
+bool isModeCalibrated(Mode m);
 
 /// Tunables of the simulation. Every number is in GD level units and "frames"
 /// are solver frames at `fps` (GD's physics tick is 60 Hz).
@@ -42,6 +56,8 @@ struct PhysicsParams {
     double playerHazardShrink = 0.20;  ///< the death hitbox is smaller than the solid one
 
     // --- ship -------------------------------------------------------------
+    // Kept for reference only: ships are refused by isModeSupported() until the
+    // vertical control has been calibrated. See docs/CALIBRATION.md.
     double shipGravity = 0.60;
     double shipThrust = 1.10;
     double shipMaxSpeed = 9.0;
@@ -51,7 +67,8 @@ struct PhysicsParams {
     int ufoAirJumps = 2;
 
     // --- wave -------------------------------------------------------------
-    // (the wave moves at +-dx per frame, i.e. exactly 45 degrees)
+    /// The wave moves at +-dx per frame, i.e. exactly 45 degrees. No gravity.
+    double waveAngleSlope = 1.0;
 
     // --- robot ------------------------------------------------------------
     double robotMinJump = 5.5;
@@ -62,6 +79,8 @@ struct PhysicsParams {
 /// X speed in units/second for GD speed portals (0 = 0.5x ... 4 = 4x).
 double speedUnitsPerSecond(int speedIndex);
 int speedIndexOf(double unitsPerSecond);
+/// Turns GD's speed multiplier (1.0 == 1x) into units/second.
+double speedFromMultiplier(double multiplier);
 
 /// Everything the solver needs to know about the player at a given instant.
 struct PlayerState {

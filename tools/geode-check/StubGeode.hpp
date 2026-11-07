@@ -50,6 +50,7 @@ public:
     void setOpacity(unsigned char) {}
     CCPoint getPosition() const { return {}; }
     CCSize getContentSize() const { return {}; }
+    CCNode* getParent() const { return nullptr; }
     float getScaleX() const { return 1.f; }
     float getScaleY() const { return 1.f; }
     float getRotation() const { return 0.f; }
@@ -96,6 +97,8 @@ struct Mod {
     T getSettingValue(std::string_view) const {
         return T{};
     }
+    // Geode's own node-id helper; the real one also applies the mod-id prefix.
+    char const* expandSpriteName(std::string_view name) const { return ""; }
 };
 
 
@@ -153,6 +156,9 @@ public:
     bool m_isRobot = false, m_isSpider = false, m_isSwing = false;
     bool m_isUpsideDown = false, m_isOnGround = false;
     double m_yVelocity = 0.0;
+    float m_playerSpeed = 0.9f;
+    float m_speedMultiplier = 1.0f;
+    bool m_isPlatformer = false;
     double getCurrentXVelocity() { return 0.0; }
     bool pushButton(PlayerButton) { return true; }
     bool releaseButton(PlayerButton) { return true; }
@@ -171,6 +177,7 @@ public:
     static PlayLayer* get() { return nullptr; }
     virtual bool init(GJGameLevel*, bool, bool) { return true; }
     virtual void onQuit() {}
+    virtual void onExit() {}
 };
 } // namespace gd
 

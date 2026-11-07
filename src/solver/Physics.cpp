@@ -15,7 +15,6 @@ inline double clampAbs(double v, double limit) {
 }
 
 /// Vertical control that happens *before* gravity is integrated.
-/// Returns true when the mode is fully handled and generic gravity must be skipped.
 void applyControl(PlayerState& s, const PhysicsParams& p, bool hold, double gravityDir, double dx) {
     switch (s.mode) {
         case Mode::Cube:
@@ -38,10 +37,14 @@ void applyControl(PlayerState& s, const PhysicsParams& p, bool hold, double grav
         }
 
         case Mode::Ball:
-            // Every fresh press flips gravity.
+            // Every fresh press flips gravity. `gravityDir` reads
+            // `gravityFlipped`, so the flip has to be undone *inside* this step,
+            // otherwise the old direction moves the ball for one frame and the
+            // flip is a no-op.
             if (hold && !s.holding) {
                 s.gravityFlipped = !s.gravityFlipped;
                 s.vy = 0.0;
+                gravityDir = s.gravityFlipped ? 1.0 : -1.0;
             }
             break;
 
@@ -50,8 +53,10 @@ void applyControl(PlayerState& s, const PhysicsParams& p, bool hold, double grav
                 if (hold) {
                     s.holdFrames++;
                 } else if (s.holdFrames > 0) {
-                    const double t = std::min<double>(s.holdFrames, p.robotChargeFrames) / p.robotChargeFrames;
-                    s.vy = -gravityDir * (p.robotMinJump + t * (p.robotJumpVelocity - p.robotMinJump));
+                    const double t = std::min<double>(s.holdFrames, p.robotChargeFrames) /
+                                     p.robotChargeFrames;
+                    s.vy = -gravityDir *
+                           (p.robotMinJump + t * (p.robotJumpVelocity - p.robotMinJump));
                     s.holdFrames = 0;
                     s.onGround = false;
                 }
@@ -60,11 +65,21 @@ void applyControl(PlayerState& s, const PhysicsParams& p, bool hold, double grav
 
         case Mode::Wave:
             // Fixed 45 degree flight: vy mirrors dx.
-            s.vy = (hold ? dx : -dx) * (s.gravityFlipped ? -1.0 : 1.0);
+            s.vy = (hold ? dx : -dx) * (s.gravityFlipped ? -1.0 : 1.0) * p.waveAngleSlope;
             break;
 
         default:
             break;
+    }
+}
+
+/// Gravity and terminal velocity for the current mode.
+void gravityFor(const PlayerState& s, const PhysicsParams& p, double& gravity, double& maxSpeed) {
+    gravity = p.gravity;
+    maxSpeed = p.maxFallSpeed;
+    if (s.mode == Mode::Ship) {
+        gravity = s.holding ? -p.shipThrust : p.shipGravity;
+        maxSpeed = p.shipMaxSpeed;
     }
 }
 
@@ -87,17 +102,20 @@ const char* modeName(Mode m) {
 bool isModeSupported(Mode m) {
     switch (m) {
         case Mode::Cube:
-        case Mode::Ship:
         case Mode::Ball:
         case Mode::Ufo:
         case Mode::Wave:
         case Mode::Robot:
             return true;
         default:
-            // Spider (teleports) and swing (needs GD 2.2 swing physics) are not
-            // modelled yet - the bot refuses to drive those instead of guessing.
+            // Ship / spider / swing: see the header comment.
             return false;
     }
+}
+
+bool isModeCalibrated(Mode m) {
+    // Only the cube has been validated against generated levels.
+    return m == Mode::Cube;
 }
 
 double speedUnitsPerSecond(int speedIndex) {
@@ -118,11 +136,18 @@ int speedIndexOf(double unitsPerSecond) {
     return best;
 }
 
+double speedFromMultiplier(double multiplier) {
+    // 1.0 == 1x == kGdSpeeds[1]. GD's multiplier is relative to the normal speed.
+    if (!(multiplier > 0.0)) return kGdSpeeds[1];
+    return kGdSpeeds[1] * multiplier;
+}
+
 StepResult step(PlayerState& s, const LevelModel& lvl, const PhysicsParams& p, bool hold) {
     StepResult res;
 
     const double size = s.size > 1.0 ? s.size : p.playerSize;
-    const double gravityDir = s.gravityFlipped ? 1.0 : -1.0;
+    const bool wasOnGround = s.onGround;
+    double gravityDir = s.gravityFlipped ? 1.0 : -1.0;
     const double dx = std::max(0.0, s.speed) / p.fps;
 
     const double prevBottom = s.y;
@@ -132,6 +157,7 @@ StepResult step(PlayerState& s, const LevelModel& lvl, const PhysicsParams& p, b
     s.x += dx;
 
     applyControl(s, p, hold, gravityDir, dx);
+    gravityDir = s.gravityFlipped ? 1.0 : -1.0; // may have been flipped above
 
     // GD integrates position *before* velocity (explicit Euler), which is what
     // gives the cube its characteristic ~2.3 block jump. Keep that order: doing
@@ -139,21 +165,20 @@ StepResult step(PlayerState& s, const LevelModel& lvl, const PhysicsParams& p, b
     // walls impossible to clear.
     double gravity = p.gravity;
     double maxSpeed = p.maxFallSpeed;
-    if (s.mode == Mode::Ship) {
-        gravity = hold ? -p.shipThrust : p.shipGravity;
-        maxSpeed = p.shipMaxSpeed;
-    }
+    gravityFor(s, p, gravity, maxSpeed);
 
-    if (s.onGround && s.mode != Mode::Ship && s.mode != Mode::Wave) {
+    const bool groundedBefore = s.onGround;
+    if (s.mode == Mode::Wave) {
+        s.y += s.vy; // fixed-slope flight, no gravity
+    } else if (groundedBefore && s.mode != Mode::Ship) {
         s.vy = 0.0;
+        // still allow the jump that applyControl() just set
+        if (s.vy == 0.0) s.y += s.vy;
     } else {
         s.y += s.vy;
     }
 
-    // Generic gravity (the wave flies at a fixed 45 degrees and ignores it).
-    if (s.mode != Mode::Wave && !(s.onGround && s.mode != Mode::Ship)) {
-        s.vy = clampAbs(s.vy + gravityDir * gravity, maxSpeed);
-    } else if (s.mode == Mode::Ship) {
+    if (s.mode != Mode::Wave && !(groundedBefore && s.mode != Mode::Ship)) {
         s.vy = clampAbs(s.vy + gravityDir * gravity, maxSpeed);
     }
 
@@ -178,7 +203,7 @@ StepResult step(PlayerState& s, const LevelModel& lvl, const PhysicsParams& p, b
     bool crashed = false;
     lvl.forSolidsInRange(s.x - 60.0, s.x + size + 60.0, [&](const Rect& b) {
         if (crashed) return;
-        Rect me{s.x, s.y, s.x + size, s.y + size};
+        const Rect me{s.x, s.y, s.x + size, s.y + size};
         if (!me.overlaps(b)) return;
 
         // Landing on top of a block.
@@ -225,7 +250,10 @@ StepResult step(PlayerState& s, const LevelModel& lvl, const PhysicsParams& p, b
 
     if (grounded) {
         s.airJumps = 0;
-        s.holdFrames = 0;
+        // Only clear the robot's charge on an actual landing. Clearing it every
+        // grounded frame made the charge reset before the button was released,
+        // so the robot could never jump at all.
+        if (!wasOnGround) s.holdFrames = 0;
     }
 
     s.onGround = grounded;

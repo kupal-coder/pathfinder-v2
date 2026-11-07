@@ -35,11 +35,20 @@ class $modify(PathfinderPlayLayer, gd::PlayLayer) {
     void resetLevel() {
         gd::PlayLayer::resetLevel();
         onLevelStart(this);
+        resetHud();
     }
 
     void onQuit() {
         invalidateLevel();
+        detachHud();
         gd::PlayLayer::onQuit();
+    }
+
+    void onExit() {
+        // Covers onQuit, a level restart from the pause menu, and closing the game.
+        invalidateLevel();
+        detachHud();
+        gd::PlayLayer::onExit();
     }
 };
 

@@ -39,6 +39,20 @@ If a physics tweak suddenly makes simple levels unsolvable, check this order fir
 - coasting into a spike **dies** (otherwise the other tests prove nothing)
 - a click at `x=0` is vetoed with a 240-frame horizon because it walks into a dead end;
   the same click just before the spike is allowed
+- ball: one press climbs 175 units towards the ceiling
+- wave: 10 frames held gains exactly as much height as 10 frames released loses
+- ufo: at most `ufoAirJumps + 1` jumps inside one airborne phase (no infinite hover)
+- robot: peak height grows with charge length (20.2 / 38.2 / 70.9 units for 1/10/22 frames)
+
+## Known physics bugs that were found and fixed
+
+Both of these looked "fine" in play and were only caught by tests, which is why the
+tests exist:
+
+| Bug | Symptom | Fix |
+| --- | --- | --- |
+| Ball gravity flip used the pre-flip direction | The flip was a one-frame no-op: the ball kept falling the old way | Recompute `gravityDir` inside `applyControl()` |
+| Robot charge cleared on every grounded frame | The robot could **never** jump (charge reset before release) | Only clear `holdFrames` on an actual landing (`!wasOnGround`) |
 
 ## Calibrating against a new GD version
 
@@ -69,7 +83,9 @@ So a green HUD means: *the calibrated model says this input survives `N` frames 
 not lead into a state with no continuation.*
 
 It does **not** mean:
-- GD's real numbers match the model for every gamemode (ships/waves are approximations),
+- GD's real numbers match the model for every gamemode (ball/ufo/wave/robot are modelled
+  from published constants and unit-tested, but only the cube is benchmarked; ship is
+  refused outright),
 - unrescanned triggers will not change the level under you,
 - dual mode, orbs, pads and portals are accounted for (they are not yet).
 

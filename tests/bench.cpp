@@ -42,7 +42,7 @@ int main(int argc, char** argv) {
         gc.spikeChance = 0.35 + 0.10 * ((i / 5) % 4);
         const LevelModel lvl = generateLevel(rng, gc);
 
-        const int speed = speedUnitsPerSecond(gc.speedIndex);
+        const double speed = speedUnitsPerSecond(gc.speedIndex);
 
         // --- 1. reference feasibility ---------------------------------------
         // The oracle has to run the whole level with a huge frontier to decide
@@ -105,6 +105,7 @@ int main(int argc, char** argv) {
     printf("solver failures       : %d\n", solverFailures);
     printf("avg progress          : %.1f%%\n", 100.0 * progressSum / std::max(1, beatable));
     printf("plan time avg/worst   : %.3f / %.3f ms over %lld calls\n",
-           sumPlanMs / std::max<long long>(1, planCalls), worstPlanMs, planCalls);
+           sumPlanMs / static_cast<double>(std::max<long long>(1, planCalls)), worstPlanMs,
+           static_cast<long long>(planCalls));
     return survived == beatable ? 0 : 1;
 }

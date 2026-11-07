@@ -11,7 +11,9 @@ using namespace geode::prelude;
 namespace pf {
 
 bool g_enabled = false;
+bool g_inLevel = false;
 HudState g_hud{};
+Settings g_settings{};
 
 namespace {
 
@@ -26,8 +28,13 @@ gd::GJBaseGameLayer* g_scannedOwner = nullptr;
 bool g_ownsInput = false;
 
 /// True once the player is actually spawned and moving in a level.
+/// Note: LevelEditorLayer also derives from GJBaseGameLayer and calls update(),
+/// so the play layer has to be checked explicitly or the bot would drive the
+/// editor too.
 bool readyToDrive(gd::GJBaseGameLayer* layer) {
     if (!layer || !layer->m_player1) return false;
+    if (!g_inLevel) return false;
+    if (gd::PlayLayer::get() != layer) return false;
     if (!layer->m_objects || layer->m_objects->count() == 0) return false;
     return true;
 }
@@ -59,28 +66,50 @@ PhysicsParams& physics() { return g_physics; }
 BotConfig& botConfig() { return g_botConfig; }
 LevelModel& scannedLevel() { return g_level; }
 
-void applySettings() {
+void refreshSettings() {
     auto* mod = Mod::get();
+    Settings st;
 
-    g_botConfig.plan.maxFrames =
-        static_cast<int>(mod->getSettingValue<int64_t>("plan-horizon-frames"));
-    g_botConfig.plan.minFrames =
-        std::min(g_botConfig.plan.maxFrames, static_cast<int>(mod->getSettingValue<int64_t>("min-secured-frames")));
-    g_botConfig.clickHorizon =
-        static_cast<int>(mod->getSettingValue<int64_t>("click-horizon-frames"));
-    g_botConfig.replanEvery =
-        std::max(1, static_cast<int>(mod->getSettingValue<int64_t>("replan-every-frames")));
-    g_botConfig.verifyPlans = mod->getSettingValue<bool>("verify-plans");
-    g_botConfig.plan.maxStatesPerLayer =
-        static_cast<int>(mod->getSettingValue<int64_t>("max-states-per-frame"));
+    st.enabled = mod->getSettingValue<bool>("enabled");
+    st.planHorizon = static_cast<int>(mod->getSettingValue<int64_t>("plan-horizon-frames"));
+    st.minSecured = static_cast<int>(mod->getSettingValue<int64_t>("min-secured-frames"));
+    st.clickHorizon = static_cast<int>(mod->getSettingValue<int64_t>("click-horizon-frames"));
+    st.replanEvery = static_cast<int>(mod->getSettingValue<int64_t>("replan-every-frames"));
+    st.stateBudget = static_cast<int>(mod->getSettingValue<int64_t>("max-states-per-frame"));
+    st.verifyPlans = mod->getSettingValue<bool>("verify-plans");
+    st.gravity = mod->getSettingValue<double>("gravity");
+    st.jumpVelocity = mod->getSettingValue<double>("jump-velocity");
+    st.hitboxBlocks = mod->getSettingValue<double>("hitbox-blocks");
 
-    // Physics: expose the two numbers people actually want to tune.
-    g_physics.gravity = mod->getSettingValue<double>("gravity");
-    g_physics.jumpVelocity = mod->getSettingValue<double>("jump-velocity");
-    g_physics.playerSize =
-        g_physics.unitsPerBlock * mod->getSettingValue<double>("hitbox-blocks");
+    // Clamp to sane ranges: a setting edit must never be able to wedge the search.
+    st.planHorizon = std::clamp(st.planHorizon, 30, 900);
+    st.minSecured = std::clamp(st.minSecured, 1, st.planHorizon);
+    st.clickHorizon = std::clamp(st.clickHorizon, 10, 600);
+    st.replanEvery = std::clamp(st.replanEvery, 1, 60);
+    st.stateBudget = std::clamp(st.stateBudget, 64, 40000);
+    st.gravity = std::clamp(st.gravity, 0.05, 4.0);
+    st.jumpVelocity = std::clamp(st.jumpVelocity, 1.0, 30.0);
+    st.hitboxBlocks = std::clamp(st.hitboxBlocks, 0.25, 2.0);
+
+    g_settings = st;
+}
+
+void applySettings() {
+    g_enabled = g_settings.enabled;
+
+    g_botConfig.plan.maxFrames = g_settings.planHorizon;
+    g_botConfig.plan.minFrames = std::min(g_settings.planHorizon, g_settings.minSecured);
+    g_botConfig.plan.maxStatesPerLayer = g_settings.stateBudget;
+    g_botConfig.clickHorizon = g_settings.clickHorizon;
+    g_botConfig.replanEvery = g_settings.replanEvery;
+    g_botConfig.verifyPlans = g_settings.verifyPlans;
+
+    g_physics.gravity = g_settings.gravity;
+    g_physics.jumpVelocity = g_settings.jumpVelocity;
+    g_physics.playerSize = g_physics.unitsPerBlock * g_settings.hitboxBlocks;
 
     g_bot.configure(&g_level, g_physics, g_botConfig);
+    g_bot.setEnabled(g_enabled);
 }
 
 bool swallowHumanInput() {
@@ -88,7 +117,21 @@ bool swallowHumanInput() {
     return g_enabled && g_ownsInput;
 }
 
+void resetHud() {
+    const bool wasEnabled = g_hud.enabled;
+    const int solids = g_hud.solids;
+    const int hazards = g_hud.hazards;
+    const bool scanned = g_hud.scanned;
+    g_hud = HudState{};
+    g_hud.enabled = wasEnabled;
+    g_hud.solids = solids;
+    g_hud.hazards = hazards;
+    g_hud.scanned = scanned;
+    g_hud.note = "new attempt";
+}
+
 void invalidateLevel() {
+    g_inLevel = false;
     g_scanned = false;
     g_scannedOwner = nullptr;
     g_ownsInput = false;
@@ -97,12 +140,17 @@ void invalidateLevel() {
 }
 
 void onLevelStart(gd::PlayLayer* layer) {
-    invalidateLevel();
+    g_inLevel = true;
     if (!layer || !layer->m_player1) return;
-    ensureScanned(layer);
+
+    // The level geometry is identical on every attempt, so the CACHED scan is
+    // reused (a big level has 10k+ objects; rescanning per death would stutter).
+    // If the scan is missing it happens lazily on the first frame.
+    if (!g_scanned) ensureScanned(layer);
+
     g_bot.reset();
     g_bot.setEnabled(g_enabled);
-    log::info("attempt started - level rescanned, bot {}",
+    log::info("attempt started (scan cached: {}), bot {}", g_scanned ? "yes" : "no",
               g_enabled ? "enabled" : "disabled");
 }
 
@@ -121,7 +169,12 @@ void onGameFrame(gd::GJBaseGameLayer* layer) {
     g_hud.unsupported = false;
 
     const Decision d = g_bot.update(live);
-    g_ownsInput = true;
+
+    // Only claim the input when the bot actually has something to say. If the
+    // search found no plan at all (unsupported geometry, a level built on orbs the
+    // simulator does not model yet, ...), leave the human in control instead of
+    // freezing their button -- being softlocked in a mod is worse than dying.
+    g_ownsInput = g_bot.status().hasPlan;
     g_hud.enabled = true;
     g_hud.lastInput = d;
 

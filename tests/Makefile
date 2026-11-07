@@ -26,13 +26,25 @@ GEODE_SRC := ../src/geode/LevelScanner.cpp ../src/geode/State.cpp \
 geode-check:
 	@set -e; for f in $(GEODE_SRC); do \
 		echo "checking $$f"; \
-		$(CXX) -std=c++23 -fsyntax-only -DPF_STUB_BUILD -I../tools/geode-check -I../src \
+		$(CXX) -std=c++23 -fsyntax-only -I../tools/geode-check -I../src \
 			-Wall -Wextra -Wno-unused-parameter $$f; \
 	done; echo "geode glue OK"
 
-check: geode-check test bench
+# Everything, with the warnings turned all the way up (the solver core must be
+# clean under these; the Geode glue is checked separately against the stub).
+STRICT := -std=c++17 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion \
+          -Wsign-conversion -Wnon-virtual-dtor -Wcast-align -Wunused \
+          -Woverloaded-virtual -Wnull-dereference
+
+strict:
+	@set -e; for f in ../src/solver/*.cpp ../src/bot/*.cpp main.cpp bench.cpp; do \
+		echo "strict $$f"; \
+		$(CXX) $(STRICT) -I../src -I. -fsyntax-only $$f; \
+	done; echo "strict build OK"
+
+check: geode-check strict test bench
 
 clean:
 	rm -f pathfinder_tests bench
 
-.PHONY: all test run clean check geode-check
+.PHONY: all test run clean check geode-check strict

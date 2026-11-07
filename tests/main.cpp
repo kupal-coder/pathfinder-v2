@@ -249,10 +249,124 @@ static void testAutoPlayerLoop() {
     CHECK(st.planPressesTotal > 0);
 }
 
+static void testGamemodes() {
+    std::printf("\n== gamemodes ==\n");
+    PhysicsParams p = makeParams();
+
+    LevelBuilder lb;
+    lb.ground(0).start(0).end(5000).ceiling(600);
+    LevelModel lvl = lb.take();
+
+    // --- ball: a press must reverse which way the ball falls --------------
+    {
+        PlayerState s;
+        s.mode = Mode::Ball;
+        s.size = p.playerSize;
+        s.speed = speedUnitsPerSecond(1);
+        s.onGround = true;
+        const double y0 = s.y;
+        step(s, lvl, p, true); // one press flips gravity
+        for (int i = 0; i < 20; ++i) {
+            const StepResult r = step(s, lvl, p, false);
+            if (!r.alive) break;
+        }
+        std::printf("  ball: flipped=%d, y %.1f -> %.1f\n", s.gravityFlipped ? 1 : 0, y0, s.y);
+        CHECK(s.gravityFlipped);
+        CHECK(s.y > y0 + 30.0); // must climb towards the ceiling
+    }
+
+    // --- wave: 45 degree flight, symmetric in both directions -------------
+    {
+        PlayerState s;
+        s.mode = Mode::Wave;
+        s.size = p.playerSize;
+        s.speed = speedUnitsPerSecond(1);
+        s.y = 300.0;
+        s.onGround = false;
+        const double y0 = s.y;
+        for (int i = 0; i < 10; ++i) step(s, lvl, p, true);
+        const double up = s.y - y0;
+        const double y1 = s.y;
+        for (int i = 0; i < 10; ++i) step(s, lvl, p, false);
+        const double down = y1 - s.y;
+        std::printf("  wave: +%.1f up, -%.1f down\n", up, down);
+        CHECK(up > 40.0);
+        CHECK(std::abs(up - down) < 2.0);
+    }
+
+    // --- ufo: air jumps are limited, not infinite --------------------------
+    {
+        PlayerState s;
+        s.mode = Mode::Ufo;
+        s.size = p.playerSize;
+        s.speed = speedUnitsPerSecond(1);
+        s.onGround = true;
+
+        // Count how many extra jumps happen inside a single airborne phase.
+        int airJumpsThisPhase = 0;
+        int worstPhase = 0;
+        bool wasAirborne = false;
+        double prevVy = 0.0;
+        for (int i = 0; i < 200; ++i) {
+            const bool press = (i % 4 == 0); // spam the button
+            const StepResult r = step(s, lvl, p, press);
+            if (!r.alive) break;
+
+            const bool airborne = !s.onGround;
+            if (airborne && !wasAirborne) {
+                // new airborne phase
+                airJumpsThisPhase = 0;
+            }
+            // a jump shows up as a sudden upward velocity kick while airborne
+            if (airborne && s.vy > prevVy + 5.0) airJumpsThisPhase++;
+            if (!airborne && wasAirborne) worstPhase = std::max(worstPhase, airJumpsThisPhase);
+
+            wasAirborne = airborne;
+            prevVy = s.vy;
+        }
+        worstPhase = std::max(worstPhase, airJumpsThisPhase);
+        std::printf("  ufo: max air jumps in one airborne phase = %d (cap %d)\n", worstPhase,
+                    p.ufoAirJumps);
+        // The phase that starts on the ground also contains the initial jump.
+        CHECK(worstPhase <= p.ufoAirJumps + 1);
+    }
+
+    // --- robot: a longer charge must jump higher ---------------------------
+    {
+        std::vector<double> peaks;
+        for (int hold : {1, 10, 22}) {
+            PlayerState s;
+            s.mode = Mode::Robot;
+            s.size = p.playerSize;
+            s.speed = speedUnitsPerSecond(1);
+            s.onGround = true;
+            double peak = 0.0;
+            for (int i = 0; i < 60; ++i) {
+                const StepResult r = step(s, lvl, p, i < hold);
+                if (!r.alive) break;
+                peak = std::max(peak, s.y);
+            }
+            peaks.push_back(peak);
+            std::printf("  robot: hold %2d frames -> peak %.1f\n", hold, peak);
+        }
+        // A broken charge reset makes every one of these zero.
+        CHECK(peaks[0] > 5.0);
+        CHECK(peaks[2] > peaks[0] + 5.0);
+    }
+
+    // --- ship must be refused, not guessed at -----------------------------
+    CHECK(!isModeSupported(Mode::Ship));
+    CHECK(!isModeSupported(Mode::Spider));
+    CHECK(isModeSupported(Mode::Cube));
+    CHECK(isModeCalibrated(Mode::Cube));
+    CHECK(!isModeCalibrated(Mode::Wave));
+}
+
 /// Prints a compact side-on view of the level with the planned path drawn on top.
 static void dumpLevel(const LevelModel& lvl, int fromX, int toX, int cellW = 4) {
     const int rows = 10;
-    std::vector<std::string> grid(rows, std::string((toX - fromX) / cellW + 1, ' '));
+    const size_t cols = static_cast<size_t>((toX - fromX) / cellW + 1);
+    std::vector<std::string> grid(static_cast<size_t>(rows), std::string(cols, ' '));
 
     auto plot = [&](double x, double y, char c) {
         const int col = static_cast<int>((x - fromX) / cellW);
@@ -326,6 +440,7 @@ int main(int argc, char** argv) {
         testClickSurvivalGate();
         testBlocksAndCeiling();
         testAutoPlayerLoop();
+        testGamemodes();
     }
     showDemo();
 

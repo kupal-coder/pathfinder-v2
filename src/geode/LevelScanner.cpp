@@ -150,10 +150,16 @@ Mode detectMode(gd::PlayerObject* player) {
 
 double readPlayerSpeed(gd::PlayerObject* player) {
     if (!player) return speedUnitsPerSecond(1);
-    // getCurrentXVelocity() is GD's own horizontal speed in units per step.
-    const double unitsPerStep = player->getCurrentXVelocity();
-    if (unitsPerStep <= 0.0) return speedUnitsPerSecond(1);
-    return unitsPerStep * 60.0;
+
+    // GD keeps the horizontal speed as a *multiplier* (1.0 == 1x) and the solver
+    // works in units/second. Note that getCurrentXVelocity() is NOT usable here:
+    // it returns ~5.19 for a 1x cube, i.e. a per-step value in a scaled space, so
+    // multiplying it by 60 would give ~311 units -- close enough to look right and
+    // wrong enough to ruin the search. Convert the multiplier instead.
+    const double multiplier = static_cast<double>(player->m_playerSpeed) *
+                              static_cast<double>(player->m_speedMultiplier);
+    if (!(multiplier > 0.0)) return speedUnitsPerSecond(1);
+    return speedFromMultiplier(multiplier);
 }
 
 PlayerState readPlayer(gd::PlayerObject* player, const PhysicsParams& phys) {

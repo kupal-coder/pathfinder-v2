@@ -165,7 +165,14 @@ PlanResult Planner::plan(const PlayerState& start) {
         int32_t goalNode = -1;
 
         for (size_t i = 0; i < cur.size(); ++i) {
-            for (int a = 0; a < 2; ++a) {
+            // Two actions per state. The cube ignores a hold that repeats a hold,
+            // so the "hold" branch is skipped when it would be a duplicate; that
+            // halves the work on long jumps with no change in reachable states.
+            const bool canHold = !cur[i].state.holding ||
+                                 cur[i].state.mode != Mode::Cube ||
+                                 cur[i].state.onGround;
+            const int actions = canHold ? 2 : 1;
+            for (int a = 0; a < actions; ++a) {
                 const bool hold = a == 1;
                 Node child = cur[i];
                 child.parent = static_cast<int32_t>(i);

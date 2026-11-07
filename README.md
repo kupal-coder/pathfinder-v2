@@ -7,7 +7,8 @@ An auto-player mod for **Geometry Dash** (Geode, GD 2.2081) that:
 2. **Searches for a path** — a deterministic physics simulator explores every reachable
    input sequence for the next few seconds.
 3. **Only clicks when the click survives** — a press is only issued if the simulator
-   proves survival afterwards. If no press survives, the bot says so instead of guessing.
+   proves survival afterwards. If no press survives, the bot says so instead of guessing — and if it has no plan
+at all, it hands the button back to you rather than freezing your input.
 
 Every decision is verifiable: the plan is replayed through the simulator before it is
 used, and a benchmark proves the closed loop clears levels end-to-end.
@@ -85,6 +86,11 @@ Without the SDK you can still verify the glue:
 make -C tests check   # unit tests + benchmark + Geode API syntax check
 ```
 
+`make -C tests check` runs, in order: the Geode API syntax check, the strict
+(`-Wconversion -Wsign-conversion -Wshadow -Wpedantic`) build of the core, the unit
+tests and the benchmark. The core is warning-free under those flags and clean under
+ASan/UBSan.
+
 `tools/geode-check/` declares exactly the Geode/GD API surface this mod uses
 (`$modify`, `GJBaseGameLayer::update`, `PlayLayer::init/resetLevel/onQuit`,
 `PlayerObject::pushButton/releaseButton`, `GameObjectType`, `getObjectRect()`, ...).
@@ -114,9 +120,10 @@ Settings worth knowing:
 
 | | Status |
 | --- | --- |
-| Cube | ✅ modelled and benchmarked |
-| Ship, UFO, Ball, Robot, Wave | ✅ modelled (per-mode physics in `src/solver/Physics.cpp`) |
-| Spider, Swing | ⛔ not modelled — the mod refuses to drive instead of guessing |
+| Cube | ✅ modelled **and benchmarked** (98.8% of beatable levels cleared) |
+| Ball, UFO, Wave, Robot | ⚠️ modelled from published GD constants, unit-tested, but **not** benchmarked against generated levels. The survival gate protects you; the HUD does not claim these are calibrated. |
+| Ship | ⛔ refused. Its vertical control is an acceleration needing GD-specific clamping that has not been verified here — guessing is how a bot flies into a wall. |
+| Spider, Swing | ⛔ refused (teleport + 2.2 swing physics are not modelled) |
 | Orbs, jump pads, portals, triggers | ⛔ scanned and counted, not simulated yet (see roadmap) |
 
 The scan reports orbs/portals/speed changes so the HUD tells you *why* a level is not
@@ -132,6 +139,10 @@ solved yet, rather than silently dying.
 - **Slopes** are treated as their bounding box — conservative (may block slightly more
   than GD), never less. A slope-aware model is roadmap item 2.
 - **Dual mode** is not handled: only `m_player1` is driven.
+- **Ship is deliberately unsupported** (see the table above). Level parts that switch
+  into a ship are refused, so the bot stops driving there and you take over.
+- **Platformer mode** (`m_isPlatformer`) is not detected; the physics assumes classic
+  auto-scroll.
 - **"Verified survival" ≠ guaranteed.** It means "the calibrated simulator says yes for N
   frames". Read `docs/CALIBRATION.md` before trusting it on a demon.
 - This is an auto-player for levels you can play yourself. Do not use it to submit
