@@ -14,6 +14,7 @@
 #include "LevelBuilder.hpp"
 #include "LevelGen.hpp"
 #include "bot/AutoPlayer.hpp"
+#include "bot/Practice.hpp"
 #include "solver/Planner.hpp"
 
 using namespace pf;
@@ -55,7 +56,8 @@ std::string jsonEscape(const std::string& in) {
 struct Options {
     unsigned seed = 1;
     int difficulty = 2; // 1..5
-    bool showPlans = true;
+    int horizon = 240;  // search width; small values make the practice loop kick in
+    int minFrames = 120;
 };
 
 LevelModel buildLevel(const Options& opt, GenConfig& outGen) {
@@ -82,6 +84,8 @@ int main(int argc, char** argv) {
         const std::string arg = argv[i];
         if (arg == "--seed" && i + 1 < argc) opt.seed = static_cast<unsigned>(std::atoi(argv[++i]));
         else if (arg == "--difficulty" && i + 1 < argc) opt.difficulty = std::atoi(argv[++i]);
+        else if (arg == "--horizon" && i + 1 < argc) opt.horizon = std::atoi(argv[++i]);
+        else if (arg == "--min-frames" && i + 1 < argc) opt.minFrames = std::atoi(argv[++i]);
     }
     if (opt.difficulty < 1) opt.difficulty = 1;
     if (opt.difficulty > 5) opt.difficulty = 5;
@@ -90,57 +94,113 @@ int main(int argc, char** argv) {
     const LevelModel lvl = buildLevel(opt, gen);
 
     PhysicsParams phys;
-    BotConfig cfg;
-    cfg.plan.maxFrames = 240;
-    cfg.plan.minFrames = 120;
-    cfg.clickHorizon = 120;
-    cfg.replanEvery = 6;
-
-    AutoPlayer bot;
-    bot.configure(&lvl, phys, cfg);
-    bot.setEnabled(true);
-
-    PlayerState s;
-    s.size = phys.playerSize;
-    s.speed = speedUnitsPerSecond(gen.speedIndex);
+    // ------------------------------------------------------------------ play
+    // Runs the real practice loop: die, die, die at the same spot, rewind, retry
+    // with a wider search, keep going. The frames of every attempt are emitted so
+    // the viewer can show the rewind happening.
+    PracticeConfig pcfg;
+    pcfg.sameSpotDeaths = 3;
+    pcfg.maxReverts = 5;
+    PracticeController pc;
+    pc.configure(pcfg);
+    pc.reset();
 
     std::vector<Frame> frames;
-    frames.reserve(1200);
+    frames.reserve(4000);
+    std::vector<int> attemptStarts;
+    std::vector<double> attemptDeaths;
     bool alive = true;
+    bool finished = false;
+    double lastDeathX = 0.0;
     double maxPlanMs = 0.0;
+    double progressX = 0.0;
+    int totalPresses = 0;
+    int totalReplans = 0;
     std::string note;
 
-    const int maxFrames = 6000;
-    for (int f = 0; f < maxFrames; ++f) {
-        const Decision d = bot.update(s);
-        const BotStatus& st = bot.status();
-        maxPlanMs = std::max(maxPlanMs, st.lastPlanMs);
-        note = st.note;
+    int baseHorizon = opt.horizon;
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        BotConfig cfg;
+        cfg.plan.maxFrames = pc.horizonFor(baseHorizon);
+        cfg.plan.minFrames = std::min(cfg.plan.maxFrames, pc.minFramesFor(opt.minFrames));
+        cfg.clickHorizon = std::min(120, cfg.plan.maxFrames);
+        cfg.replanEvery = 6;
 
-        frames.push_back(Frame{static_cast<float>(s.x), static_cast<float>(s.y),
-                               static_cast<float>(s.vy), d.hold, s.onGround, st.deadEnd,
-                               st.planLength, st.planCursor, st.planPressesTotal});
+        AutoPlayer bot;
+        bot.configure(&lvl, phys, cfg);
+        bot.setEnabled(true);
 
-        const StepResult r = step(s, lvl, phys, d.hold);
-        if (!r.alive) {
-            alive = false;
+        PlayerState s;
+        s.size = phys.playerSize;
+        s.speed = speedUnitsPerSecond(gen.speedIndex);
+        attemptStarts.push_back(static_cast<int>(frames.size()));
+
+        // Marker frame so the viewer can draw the rewind as a jump backwards.
+        frames.push_back(Frame{static_cast<float>(s.x), static_cast<float>(s.y), 0.f, 0, 1,
+                               attempt > 0, cfg.plan.maxFrames, 0, 0});
+
+        bool died = false;
+        for (int f = 0; f < 6000; ++f) {
+            const Decision d = bot.update(s);
+            const BotStatus& st = bot.status();
+            maxPlanMs = std::max(maxPlanMs, st.lastPlanMs);
+            progressX = std::max(progressX, s.x);
+            totalPresses = st.planPressesTotal;
+            totalReplans += 1;
+            note = st.note;
+
+            frames.push_back(Frame{static_cast<float>(s.x), static_cast<float>(s.y),
+                                   static_cast<float>(s.vy), d.hold, s.onGround, st.deadEnd,
+                                   st.planLength, st.planCursor, st.planPressesTotal});
+
+            const StepResult r = step(s, lvl, phys, d.hold);
+            if (!r.alive) {
+                died = true;
+                lastDeathX = s.x;
+                attemptDeaths.push_back(s.x);
+                break;
+            }
+            if (s.x >= lvl.endX - 30.0) {
+                finished = true;
+                break;
+            }
+        }
+
+        if (!died) {
+            alive = true;
             break;
         }
-        if (s.x >= lvl.endX - 30.0) break;
-    }
 
-    const BotStatus& st = bot.status();
+        alive = false;
+        // The level keeps a checkpoint from the previous attempt, so a rewind
+        // restarts at the last checkpoint rather than at x = 0.
+        const PracticeAction action = pc.onDeath(lastDeathX);
+        if (action == PracticeAction::RevertAndRetry) {
+            pc.onRevertDone();
+        } else if (action == PracticeAction::GiveUp) {
+            break;
+        }
+    }
+    const int attemptsRun = static_cast<int>(attemptStarts.size());
 
     // ------------------------------------------------------------------ JSON
     std::printf("{\n");
     std::printf("  \"seed\": %u,\n", opt.seed);
     std::printf("  \"difficulty\": %d,\n", opt.difficulty);
     std::printf("  \"alive\": %s,\n", alive ? "true" : "false");
-    std::printf("  \"finished\": %s,\n", st.maxX >= lvl.endX - 60.0 ? "true" : "false");
+    std::printf("  \"finished\": %s,\n", finished ? "true" : "false");
+    std::printf("  \"attempts\": %d,\n", attemptsRun);
+    std::printf("  \"rewinds\": %d,\n", pc.status().reverts);
+    std::printf("  \"deaths\": %d,\n", pc.status().deaths);
     std::printf("  \"endX\": %s,\n", num(lvl.endX).c_str());
-    std::printf("  \"progress\": %s,\n", num(std::min(1.0, st.maxX / lvl.endX), 3).c_str());
-    std::printf("  \"presses\": %d,\n", st.planPressesTotal);
-    std::printf("  \"replans\": %d,\n", st.replans);
+    std::printf("  \"attemptStarts\": [");
+    for (size_t i = 0; i < attemptStarts.size(); ++i)
+        std::printf("%s%d", i ? "," : "", attemptStarts[i]);
+    std::printf("],\n");
+    std::printf("  \"attemptDeaths\": [");
+    for (size_t i = 0; i < attemptDeaths.size(); ++i)
+        std::printf("%s%s", i ? "," : "", num(attemptDeaths[i]).c_str());
+    std::printf("],\n");
     std::printf("  \"maxPlanMs\": %s,\n", num(maxPlanMs, 3).c_str());
     std::printf("  \"note\": \"%s\",\n", jsonEscape(note).c_str());
 
@@ -161,6 +221,10 @@ int main(int argc, char** argv) {
     }
     std::printf("],\n");
 
+    std::printf("  \"deathX\": %s,\n", num(lastDeathX).c_str());
+    std::printf("  \"progress\": %s,\n", num(std::min(1.0, progressX / lvl.endX), 3).c_str());
+    std::printf("  \"presses\": %d,\n", totalPresses);
+    std::printf("  \"replans\": %d,\n", totalReplans);
     std::printf("  \"frames\": [");
     for (size_t i = 0; i < frames.size(); ++i) {
         const Frame& fr = frames[i];

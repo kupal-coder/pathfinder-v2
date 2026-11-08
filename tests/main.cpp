@@ -6,6 +6,7 @@
 // and replays the resulting plan through the simulator, and (3) can dump an
 // ASCII trace of a level so you can eyeball what the bot is doing.
 #include <chrono>
+#include <random>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -13,7 +14,9 @@
 #include <vector>
 
 #include "LevelBuilder.hpp"
+#include "LevelGen.hpp"
 #include "bot/AutoPlayer.hpp"
+#include "bot/Practice.hpp"
 #include "solver/Planner.hpp"
 
 using namespace pf;
@@ -362,6 +365,291 @@ static void testGamemodes() {
     CHECK(!isModeCalibrated(Mode::Wave));
 }
 
+/// Regression suite for the "2 block" case: the planner used to accept plans that
+/// only survived because of a sloppy landing tolerance, which then died in game.
+static void testTwoBlockWalls() {
+    std::printf("\n== 2-block walls ==\n");
+    PhysicsParams p = makeParams();
+
+    auto clearsSingleJump = [&](double height) {
+        LevelBuilder b;
+        b.ground(0).start(0).end(1400).block(600, 0, 60, height);
+        LevelModel lvl = b.take();
+        int good = 0;
+        for (double sx = 400; sx < 600; sx += 1.0) {
+            PlayerState s;
+            s.size = p.playerSize;
+            s.speed = speedUnitsPerSecond(1);
+            s.x = sx;
+            s.y = 0;
+            s.onGround = true;
+            bool ok = true;
+            bool onTop = false;
+            for (int f = 0; f < 60; ++f) {
+                const StepResult r = step(s, lvl, p, f == 0);
+                if (!r.alive) {
+                    ok = false;
+                    break;
+                }
+                if (f > 2 && s.onGround) {
+                    onTop = s.y >= height - 0.01;
+                    break;
+                }
+            }
+            if (ok && onTop) good++;
+        }
+        return good;
+    };
+
+    const int oneBlock = clearsSingleJump(30.0);
+    const int twoBlock = clearsSingleJump(60.0);
+    const int twoAndHalf = clearsSingleJump(75.0);
+    const int threeBlock = clearsSingleJump(90.0);
+
+    std::printf("  1 block   clearable from %d jump positions\n", oneBlock);
+    std::printf("  2 blocks  clearable from %d jump positions\n", twoBlock);
+    std::printf("  2.5 blocks clearable from %d jump positions\n", twoAndHalf);
+    std::printf("  3 blocks  clearable from %d jump positions\n", threeBlock);
+
+    // A 2-block wall *must* be solvable - and it must be solvable with margin, not
+    // by shaving the corner.
+    CHECK(twoBlock > 20);
+    CHECK(oneBlock > twoBlock);
+    // Anything above the jump apex must be impossible, or the model is optimistic.
+    CHECK(twoAndHalf == 0);
+    CHECK(threeBlock == 0);
+
+    // Landing tolerance must be tight: an 8 unit tolerance silently allowed the
+    // simulation to "land" on a corner GD would have killed the player on.
+    std::printf("  landing tolerance %.1f units, solid margin %.1f\n", p.landTolerance,
+                p.solidMargin);
+    CHECK(p.landTolerance <= 2.0);
+    CHECK(p.solidMargin > 0.0);
+
+    // The planner must solve every common 2-block arrangement.
+    struct Case {
+        const char* name;
+        double gap;
+    } cases[] = {{"two walls, tight gap", 150.0}, {"two walls, wide gap", 300.0},
+                 {"stair 1->2", 60.0},       {"wall after spike", 150.0}};
+    for (const auto& c : cases) {
+        LevelBuilder b;
+        b.ground(0).start(0).end(1800);
+        if (std::string(c.name) == "stair 1->2") {
+            b.block(500, 0, 60, 30);
+            b.block(500 + 60 + c.gap, 0, 60, 60);
+        } else if (std::string(c.name) == "wall after spike") {
+            b.spike(500);
+            b.block(500 + c.gap, 0, 60, 60);
+        } else {
+            b.block(500, 0, 60, 60);
+            b.block(500 + 60 + c.gap, 0, 60, 60);
+        }
+        LevelModel lvl = b.take();
+        PlanConfig cfg;
+        cfg.maxFrames = 600;
+        cfg.minFrames = 600;
+        cfg.maxStatesPerLayer = 60000;
+        Planner planner(&lvl, p, cfg);
+        PlayerState start;
+        start.size = p.playerSize;
+        start.speed = speedUnitsPerSecond(1);
+        const PlanResult r = planner.plan(start);
+        const bool replayOk = r.success && replay(start, r.plan, lvl, p).alive;
+        std::printf("  %-20s -> %s\n", c.name, replayOk ? "solved" : "FAILED");
+        CHECK(replayOk);
+    }
+}
+
+static void testPracticePolicy() {
+    std::printf("\n== practice / checkpoint policy ==\n");
+
+    PracticeConfig cfg;
+    cfg.sameSpotDeaths = 3;
+    cfg.maxReverts = 2;
+    cfg.checkpointEvery = 240.0;
+    cfg.checkpointClearance = 60.0;
+
+    PracticeController pc;
+    pc.configure(cfg);
+    pc.setHazardXs({1000.0, 1500.0});
+    pc.reset();
+
+    // Checkpoints are placed every `checkpointEvery` units of progress.
+    CHECK(pc.onProgress(100.0) == PracticeAction::None);
+    CHECK(pc.onProgress(260.0) == PracticeAction::PlaceCheckpoint);
+    CHECK(pc.status().checkpointsPlaced == 1);
+    // ...but never inside a hazard.
+    CHECK(pc.onProgress(1000.0) == PracticeAction::None);
+    CHECK(pc.onProgress(1300.0) == PracticeAction::PlaceCheckpoint);
+
+    // Repeated deaths at the same spot trigger a rewind, but only on the Nth.
+    CHECK(pc.onDeath(2000.0) == PracticeAction::None);
+    CHECK(pc.onDeath(2010.0) == PracticeAction::None);
+    CHECK(pc.onDeath(2020.0) == PracticeAction::RevertAndRetry);
+    std::printf("  rewound after 3 deaths at x=2000\n");
+    CHECK(pc.status().reverts == 0); // counted by onRevertDone, not by the request
+    pc.onRevertDone();
+    CHECK(pc.status().reverts == 1);
+
+    // The retry must search wider than the first attempt.
+    CHECK(pc.horizonFor(240) > 240);
+    std::printf("  retry horizon %d (base 240)\n", pc.horizonFor(240));
+
+    // Deaths scattered across the level must NOT rewind.
+    CHECK(pc.onDeath(2050.0) == PracticeAction::None);
+    CHECK(pc.onDeath(2400.0) == PracticeAction::None);
+    CHECK(pc.onDeath(2900.0) == PracticeAction::None);
+    std::printf("  scattered deaths did not rewind\n");
+
+    // A spot that keeps killing past maxReverts gives up instead of looping.
+    pc.onDeath(3000.0);
+    pc.onDeath(3010.0);
+    CHECK(pc.onDeath(3020.0) == PracticeAction::RevertAndRetry);
+    pc.onRevertDone();
+    pc.onDeath(3030.0);
+    pc.onDeath(3040.0);
+    CHECK(pc.onDeath(3050.0) == PracticeAction::GiveUp);
+    std::printf("  gave up after %d rewinds\n", pc.status().reverts);
+    CHECK(pc.status().givenUp);
+
+    // Failing to rewind (no checkpoint yet) must also terminate.
+    PracticeController fresh;
+    fresh.configure(cfg);
+    fresh.reset();
+    PracticeAction last = PracticeAction::None;
+    for (int attempt = 0; attempt < 10; ++attempt) {
+        last = fresh.onDeath(500.0);
+        if (last == PracticeAction::RevertAndRetry) {
+            last = fresh.onRevertFailed(); // GD has no checkpoint to go back to
+            if (last == PracticeAction::GiveUp) break;
+        } else if (last == PracticeAction::GiveUp) {
+            break;
+        }
+    }
+    std::printf("  no-checkpoint loop ends with: %d (2=GiveUp)\n", static_cast<int>(last));
+    CHECK(last == PracticeAction::GiveUp);
+}
+
+/// The point of the practice loop: a spot the default horizon cannot see through
+/// must be escaped after rewinding, because the retry searches wider.
+static void testPracticeEscapesHardSpot() {
+    std::printf("\n== practice loop rescues a hard spot ==\n");
+
+    // Found by searching generated levels for one where a very short horizon dies
+    // but a wide one clears: exactly the situation the rewind loop exists for.
+    std::mt19937 rng(999);
+    LevelModel lvl;
+    bool found = false;
+    for (int i = 0; i < 400 && !found; ++i) {
+        GenConfig gc;
+        gc.length = 2600;
+        gc.spikeChance = 0.45;
+        gc.blockChance = 0.35;
+        gc.minGap = 140;
+        gc.maxGap = 200;
+        const LevelModel candidate = generateLevel(rng, gc);
+
+        PhysicsParams phys;
+        PlayerState s0;
+        s0.size = 30;
+        s0.speed = speedUnitsPerSecond(1);
+        const int need = static_cast<int>(candidate.endX / (s0.speed / phys.fps)) + 120;
+        PlanConfig rc;
+        rc.maxFrames = need;
+        rc.minFrames = need;
+        rc.maxStatesPerLayer = 200000;
+        Planner ref(&candidate, phys, rc);
+        if (!ref.plan(s0).success) continue; // not beatable at all
+
+        auto attempt = [&](int horizon, double* deathX) {
+            BotConfig cfg;
+            cfg.plan.maxFrames = horizon;
+            cfg.plan.minFrames = std::min(horizon, 60);
+            AutoPlayer bot;
+            bot.configure(&candidate, phys, cfg);
+            bot.setEnabled(true);
+            PlayerState s;
+            s.size = 30;
+            s.speed = speedUnitsPerSecond(1);
+            for (int f = 0; f < 4000; ++f) {
+                const Decision d = bot.update(s);
+                const StepResult r = step(s, candidate, phys, d.hold);
+                if (!r.alive) {
+                    if (deathX) *deathX = s.x;
+                    return false;
+                }
+                if (s.x >= candidate.endX - 30) return true;
+            }
+            return false;
+        };
+
+        double dx = 0;
+        if (attempt(40, &dx)) continue;
+        if (!attempt(240, &dx)) continue;
+        lvl = candidate;
+        found = true;
+        std::printf("  found a level: short horizon dies at x=%.1f, wide horizon clears\n", dx);
+    }
+    CHECK(found);
+    if (!found) return;
+
+    // Now run the full loop: default horizon -> repeated deaths -> rewind ->
+    // wider search -> cleared.
+    PhysicsParams phys;
+    PracticeConfig pcfg;
+    pcfg.sameSpotDeaths = 3;
+    pcfg.maxReverts = 6;
+    PracticeController pc;
+    pc.configure(pcfg);
+    pc.reset();
+
+    const int baseHorizon = 40;
+    bool cleared = false;
+    int revertsSeen = 0;
+    for (int attempt = 0; attempt < 8 && !cleared; ++attempt) {
+        BotConfig cfg;
+        cfg.plan.maxFrames = pc.horizonFor(baseHorizon);
+        cfg.plan.minFrames = std::min(cfg.plan.maxFrames, pc.minFramesFor(20));
+        AutoPlayer bot;
+        bot.configure(&lvl, phys, cfg);
+        bot.setEnabled(true);
+
+        PlayerState s;
+        s.size = 30;
+        s.speed = speedUnitsPerSecond(1);
+        double deathX = 0;
+        bool alive = true;
+        for (int f = 0; f < 4000; ++f) {
+            const Decision d = bot.update(s);
+            const StepResult r = step(s, lvl, phys, d.hold);
+            if (!r.alive) {
+                alive = false;
+                deathX = s.x;
+                break;
+            }
+            if (s.x >= lvl.endX - 30) break;
+        }
+        if (alive) {
+            cleared = true;
+            std::printf("  cleared on attempt %d with horizon %d (%d rewinds)\n", attempt,
+                        cfg.plan.maxFrames, revertsSeen);
+            break;
+        }
+        const PracticeAction action = pc.onDeath(deathX);
+        if (action == PracticeAction::RevertAndRetry) {
+            pc.onRevertDone();
+            revertsSeen++;
+        } else if (action == PracticeAction::GiveUp) {
+            break;
+        }
+    }
+    CHECK(cleared);
+    CHECK(revertsSeen > 0);
+    // Both knobs must grow together, or the retry commits to a short branch.
+    CHECK(pc.minFramesFor(20) > 20);
+}
+
 /// Prints a compact side-on view of the level with the planned path drawn on top.
 static void dumpLevel(const LevelModel& lvl, int fromX, int toX, int cellW = 4) {
     const int rows = 10;
@@ -441,6 +729,9 @@ int main(int argc, char** argv) {
         testBlocksAndCeiling();
         testAutoPlayerLoop();
         testGamemodes();
+        testTwoBlockWalls();
+        testPracticePolicy();
+        testPracticeEscapesHardSpot();
     }
     showDemo();
 

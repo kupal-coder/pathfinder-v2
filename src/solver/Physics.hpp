@@ -49,7 +49,19 @@ struct PhysicsParams {
     double gravity = 0.958199;      ///< units / frame^2
     double jumpVelocity = 11.180032;///< units / frame
     double maxFallSpeed = 15.0;     ///< terminal velocity, units / frame
-    double landTolerance = 8.0;     ///< vertical slack that still counts as a landing
+    /// Vertical slack that still counts as a landing.
+    ///
+    /// This used to be 8.0, which let the simulation "ledge grab" a wall corner
+    /// up to 8 units below the top: a 2-block wall looked clearable in the
+    /// simulation and then killed the player in game. GD's own landing tolerance
+    /// is about one unit, so keep this small.
+    double landTolerance = 1.5;
+    /// Solids are inflated by this much for collision purposes (pessimistic).
+    ///
+    /// Plans must never rely on shaving a corner, because a few units of mismatch
+    /// between this model and GD is exactly what turns "2 blocks, cleared" into a
+    /// death. Planning against a slightly bigger world keeps a safety margin.
+    double solidMargin = 0.75;
 
     // --- hazards ----------------------------------------------------------
     double hazardShrink = 0.30;        ///< hazards are smaller than their sprite

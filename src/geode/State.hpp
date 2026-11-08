@@ -5,6 +5,7 @@
 #include <string>
 
 #include "../bot/AutoPlayer.hpp"
+#include "../bot/Practice.hpp"
 #include "../solver/Physics.hpp"
 #include "../solver/Types.hpp"
 
@@ -27,6 +28,15 @@ struct HudState {
     std::string mode = "cube";
     std::string note = "idle";
     Decision lastInput;
+
+    // practice mode
+    bool practice = false;
+    int deaths = 0;
+    int reverts = 0;
+    int checkpoints = 0;
+    int clusterDeaths = 0;
+    double deathX = 0.0;
+    std::string practiceNote;
 };
 
 extern bool g_enabled;
@@ -46,6 +56,9 @@ struct Settings {
     int replanEvery = 8;
     int stateBudget = 4000;
     bool verifyPlans = true;
+    bool practiceMode = true;
+    int sameSpotDeaths = 3;
+    int maxReverts = 4;
     double gravity = 0.958199;
     double jumpVelocity = 11.180032;
     double hitboxBlocks = 1.0;
@@ -56,6 +69,7 @@ AutoPlayer& bot();
 PhysicsParams& physics();
 BotConfig& botConfig();
 LevelModel& scannedLevel();
+PracticeController& practice();
 
 /// Re-reads every mod setting (cheap: fills a small struct).
 void refreshSettings();
@@ -77,6 +91,12 @@ void onGameFrame(gd::GJBaseGameLayer* layer);
 
 /// Called from PlayLayer hooks when an attempt starts/ends.
 void onLevelStart(gd::PlayLayer* layer);
+
+/// Called when the player dies (PlayLayer::destroyPlayer hook).
+void onPlayerDied(gd::PlayLayer* layer);
+
+/// Applies the practice-mode console on/off (practice mode, checkpoints, rewind).
+void applyPracticeMode(gd::PlayLayer* layer);
 
 /// Installs the mod's hooks. Called from onModLoaded.
 void installHooks();

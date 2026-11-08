@@ -201,8 +201,13 @@ StepResult step(PlayerState& s, const LevelModel& lvl, const PhysicsParams& p, b
     }
 
     bool crashed = false;
-    lvl.forSolidsInRange(s.x - 60.0, s.x + size + 60.0, [&](const Rect& b) {
+    const double margin = std::max(0.0, p.solidMargin);
+    lvl.forSolidsInRange(s.x - 60.0, s.x + size + 60.0, [&](const Rect& raw) {
         if (crashed) return;
+        // Inflate by the safety margin: if the plan only survives by shaving the
+        // corner of this block, the margin turns it into a death *here*, in the
+        // search, instead of a death in the game.
+        const Rect b = raw.inflated(margin);
         const Rect me{s.x, s.y, s.x + size, s.y + size};
         if (!me.overlaps(b)) return;
 

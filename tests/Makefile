@@ -1,7 +1,7 @@
 CXX      ?= g++
 CXXFLAGS ?= -std=c++17 -O2 -Wall -Wextra -Wno-unused-parameter
 INCLUDES := -I../src -I.
-CORE     := ../src/solver/Types.cpp ../src/solver/Physics.cpp ../src/solver/Planner.cpp ../src/bot/AutoPlayer.cpp
+CORE     := ../src/solver/Types.cpp ../src/solver/Physics.cpp ../src/solver/Planner.cpp ../src/bot/AutoPlayer.cpp ../src/bot/Practice.cpp
 HDRS     := $(wildcard ../src/*/*.hpp)
 
 all: pathfinder_tests bench

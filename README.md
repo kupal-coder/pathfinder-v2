@@ -41,6 +41,27 @@ heuristics like "jump when a spike is 3 blocks away". It searches:
   requires that a continuation still exists afterwards. A press that walks into a dead
   end is vetoed even though it looks safe for the next two seconds.
 
+## Practice mode, checkpoints, and rewinding
+
+While auto-play is on, Pathfinder also drives **practice mode**:
+
+- it keeps its own **checkpoints**, placed every ~240 units of progress and never
+  inside a hazard (a checkpoint in the middle of a spike run is worse than none);
+- when it dies, the death position is recorded;
+- **three deaths within 90 units of each other** count as "dying to the same spot";
+- at that point it **rewinds one checkpoint** (GD's own checkpoint stack, so object
+  state and the camera restore correctly) and retries the section with a **wider
+  search**: the search horizon jumps to at least 240 frames and the commit threshold
+  grows with it. Growing only the width is useless — the planner stops at the first
+  branch that survives the commit threshold, so a retry with a big horizon and a tiny
+  threshold still commits to a doomed branch;
+- after `max-rewinds` failed retries at one spot it **stops driving** and hands the
+  controls back rather than looping forever.
+
+This is verified end-to-end in `tests/main.cpp` (`practice loop rescues a hard spot`):
+a generated level where the default horizon provably dies is cleared in 3 attempts —
+die, rewind, clear. The demo page shows the same thing with seed 10 and horizon 40.
+
 ## Measured results
 
 `make -C tests run` — closed-loop, i.e. the bot drives the real simulator frame by frame:
@@ -114,6 +135,9 @@ Settings worth knowing:
 | **Re-plan interval** | Re-decide from the live state this often. Lower = more responsive. |
 | **State budget per frame** | CPU cap. Lower it if a brutal level causes frame drops. |
 | **Verify every plan** | Replay each plan through the simulator before trusting it. |
+| **Practice mode + own checkpoints** | Keep the level in practice mode and place the bot's own checkpoints. |
+| **Deaths before rewinding** | Same-spot deaths needed before it rewinds a checkpoint (default 3). |
+| **Maximum rewinds per spot** | Retries before it gives up and hands control back (default 4). |
 | **Physics: gravity / jump velocity / hitbox** | Calibration knobs. See `docs/CALIBRATION.md`. |
 
 ## Supported
@@ -136,6 +160,8 @@ solved yet, rather than silently dying.
   for their size portals.
 - **Triggers.** Objects toggled by move/rotate/toggle triggers are scanned as static.
   `m_isGroupDisabled` is honoured at scan time, but live trigger changes are not re-scanned.
+- **Rewinding** uses GD's checkpoint stack, so it lands on the last checkpoint *the
+  bot placed*. It cannot rewind past the start of an attempt.
 - **Slopes** are treated as their bounding box — conservative (may block slightly more
   than GD), never less. A slope-aware model is roadmap item 2.
 - **Dual mode** is not handled: only `m_player1` is driven.

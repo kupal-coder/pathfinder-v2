@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 
+#include <limits>
+
 #include "Hooks.hpp"
 #include "LevelScanner.hpp"
 
@@ -17,7 +19,28 @@ Settings g_settings{};
 
 namespace {
 
+/// Drops GD's most recent checkpoint and rewinds to the one before it.
+///
+/// GD's practice stack is what restores object state and the camera, so this uses
+/// it instead of teleporting the cube. Returns false when there is nothing to go
+/// back to (GD refuses to remove the very first checkpoint of an attempt).
+bool rewindOneCheckpoint(gd::PlayLayer* layer) {
+    if (!layer || !layer->m_checkpointArray) return false;
+    const unsigned int count = layer->m_checkpointArray->count();
+    if (count == 0) return false;
+
+    // removeCheckpoint(true) drops the last checkpoint; the next respawn lands on
+    // the one before it.
+    layer->removeCheckpoint(true);
+
+    const unsigned int after = layer->m_checkpointArray
+                                   ? layer->m_checkpointArray->count()
+                                   : 0u;
+    return after < count;
+}
+
 AutoPlayer g_bot;
+PracticeController g_practice;
 PhysicsParams g_physics;
 BotConfig g_botConfig;
 LevelModel g_level;
@@ -26,6 +49,10 @@ ScanStats g_lastScan;
 bool g_scanned = false;
 gd::GJBaseGameLayer* g_scannedOwner = nullptr;
 bool g_ownsInput = false;
+
+/// Hazard centres handed to the practice controller so it does not drop a
+/// checkpoint inside a spike run.
+std::vector<double> g_hazardXs;
 
 /// True once the player is actually spawned and moving in a level.
 /// Note: LevelEditorLayer also derives from GJBaseGameLayer and calls update(),
@@ -57,11 +84,18 @@ void ensureScanned(gd::GJBaseGameLayer* layer) {
     g_hud.solids = g_lastScan.solids;
     g_hud.hazards = g_lastScan.hazards;
     g_hud.scanned = true;
+
+    // Practice checkpoints should never land inside a hazard.
+    g_hazardXs.clear();
+    g_hazardXs.reserve(g_level.hazards.size());
+    for (const auto& h : g_level.hazards) g_hazardXs.push_back(h.centerX());
+    g_practice.setHazardXs(g_hazardXs);
 }
 
 } // namespace
 
 AutoPlayer& bot() { return g_bot; }
+PracticeController& practice() { return g_practice; }
 PhysicsParams& physics() { return g_physics; }
 BotConfig& botConfig() { return g_botConfig; }
 LevelModel& scannedLevel() { return g_level; }
@@ -80,6 +114,9 @@ void refreshSettings() {
     st.gravity = mod->getSettingValue<double>("gravity");
     st.jumpVelocity = mod->getSettingValue<double>("jump-velocity");
     st.hitboxBlocks = mod->getSettingValue<double>("hitbox-blocks");
+    st.practiceMode = mod->getSettingValue<bool>("practice-mode");
+    st.sameSpotDeaths = static_cast<int>(mod->getSettingValue<int64_t>("same-spot-deaths"));
+    st.maxReverts = static_cast<int>(mod->getSettingValue<int64_t>("max-rewinds"));
 
     // Clamp to sane ranges: a setting edit must never be able to wedge the search.
     st.planHorizon = std::clamp(st.planHorizon, 30, 900);
@@ -90,12 +127,19 @@ void refreshSettings() {
     st.gravity = std::clamp(st.gravity, 0.05, 4.0);
     st.jumpVelocity = std::clamp(st.jumpVelocity, 1.0, 30.0);
     st.hitboxBlocks = std::clamp(st.hitboxBlocks, 0.25, 2.0);
+    st.sameSpotDeaths = std::clamp(st.sameSpotDeaths, 1, 20);
+    st.maxReverts = std::clamp(st.maxReverts, 1, 20);
 
     g_settings = st;
 }
 
 void applySettings() {
     g_enabled = g_settings.enabled;
+
+    PracticeConfig pc;
+    pc.sameSpotDeaths = g_settings.sameSpotDeaths;
+    pc.maxReverts = g_settings.maxReverts;
+    g_practice.configure(pc);
 
     g_botConfig.plan.maxFrames = g_settings.planHorizon;
     g_botConfig.plan.minFrames = std::min(g_settings.planHorizon, g_settings.minSecured);
@@ -150,8 +194,81 @@ void onLevelStart(gd::PlayLayer* layer) {
 
     g_bot.reset();
     g_bot.setEnabled(g_enabled);
+    applyPracticeMode(layer);
     log::info("attempt started (scan cached: {}), bot {}", g_scanned ? "yes" : "no",
               g_enabled ? "enabled" : "disabled");
+}
+
+void applyPracticeMode(gd::PlayLayer* layer) {
+    if (!layer) return;
+
+    // Pathfinder runs in practice mode while it is enabled: that is what gives it
+    // its own checkpoints and the ability to rewind after a repeated death.
+    const bool wantPractice = g_enabled && g_settings.practiceMode;
+    g_hud.practice = wantPractice;
+
+    if (layer->m_isPracticeMode != wantPractice) {
+        layer->togglePracticeMode(wantPractice);
+        log::info("practice mode {}", wantPractice ? "on" : "off");
+    }
+
+    // A fresh attempt starts a fresh death ledger; the checkpoints GD keeps are
+    // cleared so the bot's own checkpoint logic owns the positions.
+    g_practice.reset();
+    g_practice.status();
+    g_hud.deaths = 0;
+    g_hud.reverts = 0;
+    g_hud.checkpoints = 0;
+    g_hud.clusterDeaths = 0;
+    g_hud.deathX = 0.0;
+}
+
+void onPlayerDied(gd::PlayLayer* layer) {
+    if (!g_enabled || !layer || !layer->m_player1) return;
+
+    const double x = readPlayer(layer->m_player1, g_physics).x;
+    const PracticeAction action = g_practice.onDeath(x);
+
+    const PracticeStatus& st = g_practice.status();
+    g_hud.deaths = st.deaths;
+    g_hud.reverts = st.reverts;
+    g_hud.checkpoints = st.checkpointsPlaced;
+    g_hud.clusterDeaths = st.clusterDeaths;
+    g_hud.deathX = st.deathX;
+    g_hud.practiceNote = st.note;
+
+    if (action == PracticeAction::RevertAndRetry) {
+        // Go back one checkpoint and let the controller re-plan the section with a
+        // wider search. GD's own rewind is used rather than teleporting the cube:
+        // it restores object states, camera and the attempt counter correctly.
+        const bool rewound = rewindOneCheckpoint(layer);
+        if (rewound) {
+            g_practice.onRevertDone();
+            g_hud.note = "rewound to previous checkpoint, retrying";
+        } else {
+            const PracticeAction after = g_practice.onRevertFailed();
+            g_hud.note = g_practice.status().note;
+            if (after == PracticeAction::GiveUp) {
+                g_inLevel = false; // stop driving, hand control back
+            }
+        }
+        g_hud.reverts = g_practice.status().reverts;
+        g_hud.practiceNote = g_practice.status().note;
+
+        // Make the next plans search further; the extra CPU is worth it when the
+        // bot has already proven it cannot solve this spot at the default horizon.
+        g_botConfig.plan.maxFrames = g_practice.horizonFor(g_settings.planHorizon);
+        g_botConfig.plan.minFrames =
+            std::min(g_botConfig.plan.maxFrames,
+                     g_practice.minFramesFor(g_settings.minSecured));
+        g_bot.configure(&g_level, g_physics, g_botConfig);
+        g_bot.setEnabled(g_enabled);
+    } else if (action == PracticeAction::GiveUp) {
+        g_hud.note = g_practice.status().note;
+        g_inLevel = false; // stop driving; hand control back
+    } else {
+        g_hud.note = g_practice.status().note;
+    }
 }
 
 void onGameFrame(gd::GJBaseGameLayer* layer) {
@@ -188,6 +305,18 @@ void onGameFrame(gd::GJBaseGameLayer* layer) {
     g_hud.planMs = st.lastPlanMs;
     g_hud.deadEnd = st.deadEnd;
     g_hud.mode = modeName(live.mode);
+
+    // Practice: the bot places its own checkpoints as it advances, so a repeated
+    // death has somewhere to rewind to. markCheckpoint() lives on PlayLayer, and
+    // readyToDrive() already established that this layer *is* the play layer.
+    if (g_hud.practice && live.onGround) {
+        const PracticeAction action = g_practice.onProgress(live.x);
+        if (action == PracticeAction::PlaceCheckpoint) {
+            if (auto* play = gd::PlayLayer::get()) play->markCheckpoint();
+            g_hud.checkpoints = g_practice.status().checkpointsPlaced;
+            g_hud.practiceNote = g_practice.status().note;
+        }
+    }
 
     // Drive the game: press/release exactly when the bot's plan says so.
     if (d.changed) {

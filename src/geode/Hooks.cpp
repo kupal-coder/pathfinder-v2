@@ -38,6 +38,13 @@ class $modify(PathfinderPlayLayer, gd::PlayLayer) {
         resetHud();
     }
 
+    /// Deaths are observed at the source: this is called exactly once per kill,
+    /// before the respawn, so the practice controller sees the death position.
+    void destroyPlayer(gd::PlayerObject* player, gd::GameObject* object) {
+        if (player == m_player1) onPlayerDied(this);
+        gd::PlayLayer::destroyPlayer(player, object);
+    }
+
     void onQuit() {
         invalidateLevel();
         detachHud();

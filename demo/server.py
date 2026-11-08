@@ -26,6 +26,7 @@ def build_binary():
         "src/solver/Physics.cpp",
         "src/solver/Planner.cpp",
         "src/bot/AutoPlayer.cpp",
+        "src/bot/Practice.cpp",
     ]
     newest = 0
     for rel in sources:
@@ -66,15 +67,18 @@ class Handler(SimpleHTTPRequestHandler):
         try:
             seed = int(query.get("seed", ["1"])[0])
             difficulty = max(1, min(5, int(query.get("difficulty", ["2"])[0])))
+            horizon = max(20, min(600, int(query.get("horizon", ["240"])[0])))
+            min_frames = max(10, min(600, int(query.get("minFrames", ["120"])[0])))
         except ValueError:
-            self.respond(400, {"error": "seed and difficulty must be integers"})
+            self.respond(400, {"error": "seed, difficulty, horizon and minFrames must be integers"})
             return
 
         seed = max(1, min(1_000_000, seed))
         try:
             out = subprocess.run(
-                [BINARY, "--seed", str(seed), "--difficulty", str(difficulty)],
-                capture_output=True, text=True, timeout=120, check=True,
+                [BINARY, "--seed", str(seed), "--difficulty", str(difficulty),
+                 "--horizon", str(horizon), "--min-frames", str(min_frames)],
+                capture_output=True, text=True, timeout=180, check=True,
             ).stdout
         except subprocess.CalledProcessError as exc:
             self.respond(500, {"error": "runner failed", "detail": exc.stderr[-800:]})

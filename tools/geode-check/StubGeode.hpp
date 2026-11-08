@@ -172,12 +172,21 @@ public:
     virtual void resetLevel() {}
 };
 
+class CheckpointObject : public CCObject {};
+
 class PlayLayer : public GJBaseGameLayer {
 public:
+    CCArray* m_checkpointArray = nullptr;
+    bool m_isPracticeMode = false;
+
     static PlayLayer* get() { return nullptr; }
     virtual bool init(GJGameLevel*, bool, bool) { return true; }
     virtual void onQuit() {}
     virtual void onExit() {}
+    virtual void destroyPlayer(PlayerObject*, GameObject*) {}
+    virtual CheckpointObject* markCheckpoint() { return nullptr; }
+    virtual void removeCheckpoint(bool) {}
+    virtual void togglePracticeMode(bool) {}
 };
 } // namespace gd
 

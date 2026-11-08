@@ -66,18 +66,27 @@ void hudTick(float dt) {
 
     // Hand-rolled instead of fmt::format: this runs on the frame path and a
     // formatted std::string is a heap allocation every time.
-    char buf[512];
+    char practiceSuffix[192];
+    if (g_hud.practiceNote.empty()) {
+        practiceSuffix[0] = '\0';
+    } else {
+        std::snprintf(practiceSuffix, sizeof(practiceSuffix), " | %s", g_hud.practiceNote.c_str());
+    }
+
+    char buf[768];
     std::snprintf(buf, sizeof(buf),
                   "Pathfinder  [ON]\n"
                   "mode %s   scan %d solids / %d hazards\n"
                   "presses %d   replans %d\n"
                   "plan %df @ %df   %.2f ms\n"
                   "horizon %.0f%%  [%s]%s\n"
-                  "%s",
+                  "practice %s   deaths %d   rewinds %d\n"
+                  "%s%s",
                   g_hud.mode.c_str(), g_hud.solids, g_hud.hazards, g_hud.presses,
                   g_hud.replans, g_hud.planFrames, g_hud.cursor, g_hud.planMs,
                   g_hud.confidence * 100.0, verdict, g_hud.unsupported ? "  UNSUPPORTED" : "",
-                  g_hud.note.c_str());
+                  g_hud.practice ? "ON" : "off", g_hud.deaths, g_hud.reverts,
+                  g_hud.note.c_str(), practiceSuffix);
     g_label->setString(buf);
 }
 

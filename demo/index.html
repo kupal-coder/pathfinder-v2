@@ -94,8 +94,11 @@
       <button id="play" disabled>Pause</button>
       <button id="step" disabled>Step</button>
       <button id="restart" disabled>Restart</button>
-      <label class="field">seed <input id="seed" type="number" value="7" min="1" max="1000000"></label>
+      <label class="field">seed <input id="seed" type="number" value="10" min="1" max="1000000"></label>
       <label class="field">difficulty <input id="difficulty" type="number" value="3" min="1" max="5"></label>
+      <label class="field" title="Small values force the practice loop to kick in">horizon
+        <input id="horizon" type="number" value="40" min="20" max="600" step="10" style="width:74px">
+      </label>
       <label class="field" style="margin-left:auto; gap:10px; min-width:220px">
         speed <input id="speed" type="range" min="0.25" max="4" step="0.25" value="1" style="flex:1">
         <span id="speedLabel" style="min-width:34px;text-align:right">1x</span>
@@ -127,6 +130,17 @@
           <div class="kv"><span>plan coverage</span><b id="sCoverage">–</b></div>
           <div class="bar"><i id="barCoverage"></i></div>
         </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Practice loop</h2>
+      <div class="body" style="display:grid; gap:8px">
+        <div class="kv"><span>attempt</span><b id="pAttempt">–</b></div>
+        <div class="kv"><span>deaths / rewinds</span><b id="pDeaths">–</b></div>
+        <div class="kv"><span>search this attempt</span><b id="pHorizon">–</b></div>
+        <div class="bar"><i id="barAttempt" style="background:linear-gradient(90deg,#7c3aed,#a78bfa)"></i></div>
+        <div class="note" id="pExplain">Practice mode is on: the bot checkpoints itself and rewinds when it keeps dying in the same place.</div>
       </div>
     </div>
 
@@ -164,6 +178,12 @@ const els = {
   restart: document.getElementById('restart'),
   seed: document.getElementById('seed'),
   difficulty: document.getElementById('difficulty'),
+  horizon: document.getElementById('horizon'),
+  pAttempt: document.getElementById('pAttempt'),
+  pDeaths: document.getElementById('pDeaths'),
+  pHorizon: document.getElementById('pHorizon'),
+  barAttempt: document.getElementById('barAttempt'),
+  pExplain: document.getElementById('pExplain'),
   speed: document.getElementById('speed'),
   speedLabel: document.getElementById('speedLabel'),
   verdict: document.getElementById('verdict'),
@@ -203,7 +223,9 @@ async function runSolver() {
     const difficulty = Math.max(1, Math.min(5, parseInt(els.difficulty.value) || 1));
     els.seed.value = seed;
     els.difficulty.value = difficulty;
-    const res = await fetch(`/api/run?seed=${seed}&difficulty=${difficulty}`);
+    const horizon = Math.max(20, Math.min(600, parseInt(els.horizon.value) || 40));
+    els.horizon.value = horizon;
+    const res = await fetch(`/api/run?seed=${seed}&difficulty=${difficulty}&horizon=${horizon}&minFrames=${Math.min(horizon, 120)}`);
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       throw new Error(err.error || `HTTP ${res.status}`);
@@ -220,9 +242,10 @@ async function runSolver() {
 
     const d = state.data;
     els.scan.textContent = `${d.solids.length} solids / ${d.hazards.length} hazards`;
-    if (d.finished) setBadge('ok', `survived · finished ${(d.progress * 100).toFixed(0)}%`);
-    else if (d.alive) setBadge('warn', `survived · stopped at ${(d.progress * 100).toFixed(0)}%`);
-    else setBadge('bad', `died at ${(d.progress * 100).toFixed(0)}%`);
+    const extra = d.attempts > 1 ? ` · ${d.attempts} attempts, ${d.rewinds} rewinds` : '';
+    if (d.finished) setBadge('ok', `finished ${(d.progress * 100).toFixed(0)}%${extra}`);
+    else if (d.alive) setBadge('warn', `stopped at ${(d.progress * 100).toFixed(0)}%${extra}`);
+    else setBadge('bad', `gave up at ${(d.progress * 100).toFixed(0)}%${extra}`);
     updateStats();
   } catch (err) {
     setBadge('bad', 'error');
@@ -409,6 +432,22 @@ function draw() {
     }
   }
 
+  // attempt markers: where each retry started (the rewind points)
+  for (const start of (d.attemptStarts || [])) {
+    if (start <= 0) continue;
+    const f = d.frames[start];
+    if (!f) continue;
+    const px = toScreenX(f[0] + BLOCK / 2);
+    const py = toScreenY(f[1] + BLOCK / 2);
+    if (px < -20 || px > W + 20) continue;
+    ctx.strokeStyle = '#a78bfa';
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(px, py, 14, 0, Math.PI * 2); ctx.stroke();
+    ctx.fillStyle = '#a78bfa';
+    ctx.font = 'bold 10px ui-sans-serif, system-ui, sans-serif';
+    ctx.fillText('retry', px - 12, py - 18);
+  }
+
   // frame ruler
   const total = visibleFrames();
   ctx.fillStyle = '#0d121c';
@@ -449,6 +488,23 @@ function updateStats() {
   const coverage = cf && cf.planFrames > 0 ? Math.min(1, cf.cursor / cf.planFrames) : 0;
   els.coverage.textContent = cf ? `${cf.cursor}/${cf.planFrames}f` : '–';
   els.barCoverage.style.width = (coverage * 100).toFixed(0) + '%';
+
+  // which attempt are we watching?
+  const starts = d.attemptStarts || [0];
+  let attemptIdx = 0;
+  for (let i = 0; i < starts.length; i++) if (state.frame >= starts[i]) attemptIdx = i;
+  els.pAttempt.textContent = `${attemptIdx + 1} / ${starts.length}`;
+  els.pDeaths.textContent = `${d.deaths || 0} / ${d.rewinds || 0}`;
+  const attemptFrames = (attemptIdx + 1 < starts.length ? starts[attemptIdx + 1] : total) - starts[attemptIdx];
+  const pctAttempt = attemptFrames > 1 ? ((state.frame - starts[attemptIdx]) / (attemptFrames - 1)) * 100 : 0;
+  els.barAttempt.style.width = Math.max(0, Math.min(100, pctAttempt)).toFixed(0) + '%';
+  els.pHorizon.textContent = cf ? `${cf.planFrames} frames` : '–';
+  if (starts.length > 1) {
+    const deaths = (d.attemptDeaths || []).map(x => Math.round(x));
+    els.pExplain.textContent =
+      `Died at ${deaths.join(', ')} — too close together, so the bot rewound a checkpoint ` +
+      `and re-ran the section with a wider search (attempt ${attemptIdx + 1}).`;
+  }
 
   els.note.textContent = d.note || '–';
   els.plan.textContent = cf ? `${cf.planFrames} frames` : '–';

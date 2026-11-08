@@ -26,6 +26,34 @@
 			"type": "bool",
 			"default": false
 		},
+		"practice-mode": {
+			"name": "Practice mode + own checkpoints",
+			"description": "While auto-play is on, keep the level in practice mode, place the bot's own checkpoints as it advances, and rewind one checkpoint when it keeps dying at the same spot.",
+			"type": "bool",
+			"default": true
+		},
+		"same-spot-deaths": {
+			"name": "Deaths before rewinding",
+			"description": "How many times the bot must die in the same place before it rewinds a checkpoint and retries with a wider search.",
+			"type": "int",
+			"default": 3,
+			"min": 1,
+			"max": 20,
+			"control": {
+				"slider": true
+			}
+		},
+		"max-rewinds": {
+			"name": "Maximum rewinds per spot",
+			"description": "After this many rewinds at one spot the bot stops driving and hands control back.",
+			"type": "int",
+			"default": 4,
+			"min": 1,
+			"max": 20,
+			"control": {
+				"slider": true
+			}
+		},
 		"plan-horizon-frames": {
 			"name": "Search horizon (frames)",
 			"description": "How far ahead the simulator looks. 240 frames = 4 seconds. Higher = safer but slower.",
